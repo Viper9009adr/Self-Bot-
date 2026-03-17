@@ -531,6 +531,15 @@ Automatic detection of CAPTCHA challenges with user notification:
 - Alerts user when intervention is needed
 - Can pause automation until resolved
 
+---
+
+### Secret management rules for contributors
+
+1. **Never commit `.env` or any `.env.*` file.** Copy `.env.example` to `.env` and fill in values locally.
+2. **Never commit `.oauth-tokens.json`.** This file contains live OAuth refresh tokens. If it is accidentally committed, revoke the tokens immediately and re-authenticate.
+3. **Never hardcode API keys, tokens, or passwords in source files.** All credentials must be loaded from environment variables at runtime.
+4. **If a secret is accidentally committed**, treat it as compromised immediately: rotate/revoke it, then use `git filter-repo` or contact your git host to purge the history.
+
 ## Development Commands
 
 ```bash

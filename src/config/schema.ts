@@ -1,0 +1,133 @@
+/**
+ * src/config/schema.ts
+ * Zod v3 configuration schema with SecretString branded type.
+ */
+import { z } from 'zod';
+
+// ─── Branded SecretString ─────────────────────────────────────────────────────
+declare const __brand: unique symbol;
+export type Brand<T, B> = T & { readonly [__brand]: B };
+export type SecretString = Brand<string, 'Secret'>;
+
+/** Wrap a plain string as a SecretString (only use at config parse time). */
+export function secret(value: string): SecretString {
+  return value as SecretString;
+}
+
+/** Redact a SecretString for logging purposes. */
+export function redactSecret(_value: SecretString): string {
+  return '[REDACTED]';
+}
+
+// ─── Zod transform helper ──────────────────────────────────────────────────
+const secretString = z
+  .string()
+  .min(1)
+  .transform((v) => secret(v));
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+/** Default model per provider — used when LLM_MODEL is not set. */
+const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
+  openai: 'gpt-4o',
+  anthropic: 'claude-sonnet-4-20250514',
+  'claude-oauth': 'claude-sonnet-4-20250514',
+  groq: 'llama-3.3-70b-versatile',
+  'github-models': 'gpt-4o',
+  openrouter: 'meta-llama/llama-3.1-8b-instruct:free',
+};
+
+export const ConfigSchema = z.object({
+  // Node environment
+  nodeEnv: z
+    .enum(['development', 'production', 'test'])
+    .default('development'),
+
+  // Logging
+  logLevel: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
+    .default('info'),
+
+  // ── Telegram ──────────────────────────────────────────────────────────────
+  telegram: z.object({
+    botToken: secretString,
+    webhookSecret: secretString.optional(),
+    mode: z.enum(['webhook', 'polling']).default('polling'),
+    webhookUrl: z.string().url().optional(),
+    webhookPort: z.coerce.number().int().min(1).max(65535).default(8080),
+  }),
+
+  // ── LLM ───────────────────────────────────────────────────────────────────
+  llm: z.object({
+    provider: z
+      .enum(['openai', 'anthropic', 'groq', 'github-models', 'openrouter', 'claude-oauth'])
+      .default('openai'),
+    model: z.string().min(1).optional(),
+    openaiApiKey: secretString.optional(),
+    anthropicApiKey: secretString.optional(),
+    groqApiKey: secretString.optional(),
+    // ── OAuth / Token-based providers (free alternatives) ─────────────────
+    githubToken: secretString.optional(),
+    openrouterApiKey: secretString.optional(),
+    openrouterReferer: z.string().url().optional(),
+    // ── Anthropic PKCE OAuth ──────────────────────────────────────────────
+    /** Path to token cache file (default: .oauth-tokens.json) */
+    oauthTokensPath: z.string().default('.oauth-tokens.json'),
+  }).transform((llm) => ({
+    ...llm,
+    // If model is not explicitly set, pick a sensible default for the provider.
+    // This prevents the dangerous situation where LLM_MODEL defaults to "gpt-4o"
+    // but the provider is "claude-oauth" or "anthropic".
+    model: llm.model ?? PROVIDER_DEFAULT_MODELS[llm.provider] ?? 'gpt-4o',
+  })),
+
+  // ── Agent ─────────────────────────────────────────────────────────────────
+  agent: z.object({
+    maxSteps: z.coerce.number().int().min(1).max(50).default(10),
+    maxHistoryTokens: z.coerce.number().int().min(100).default(8000),
+    systemPromptExtra: z.string().default(''),
+  }),
+
+  // ── Session ───────────────────────────────────────────────────────────────
+  session: z.object({
+    ttlSeconds: z.coerce.number().int().min(60).default(3600),
+    store: z.enum(['memory', 'redis']).default('memory'),
+  }),
+
+  // ── Redis ─────────────────────────────────────────────────────────────────
+  redis: z.object({
+    url: z.string().default('redis://localhost:6379'),
+  }),
+
+  // ── MCP ───────────────────────────────────────────────────────────────────
+  mcp: z.object({
+    serverPort: z.coerce.number().int().min(1).max(65535).default(3001),
+    serverHost: z.string().default('127.0.0.1'),
+  }),
+
+  // ── Browser Worker ────────────────────────────────────────────────────────
+  browserWorker: z.object({
+    url: z.string().url().default('http://localhost:3002'),
+    timeoutMs: z.coerce.number().int().min(1000).default(30000),
+  }),
+
+  // ── Queue ─────────────────────────────────────────────────────────────────
+  queue: z.object({
+    concurrency: z.coerce.number().int().min(1).default(4),
+    perUserConcurrency: z.coerce.number().int().min(1).default(2),
+  }),
+
+  // ── Access Control ────────────────────────────────────────────────────────
+  access: z.object({
+    ownerUserId: z
+      .string()
+      .min(1)
+      .regex(/^[a-z]+:.+/, 'BOT_OWNER_ID must be platform-prefixed, e.g. tg:123456789'),
+    allowlistPath: z.string().default('.allowlist.json'),
+    silentReject: z.coerce.boolean().default(true),
+    rejectionMessage: z.string().optional(),
+  }),
+});
+
+export type Config = z.infer<typeof ConfigSchema>;
+export type RawConfig = z.input<typeof ConfigSchema>;

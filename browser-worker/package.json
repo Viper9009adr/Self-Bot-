@@ -1,0 +1,26 @@
+{
+  "name": "self-bot-browser-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright browser worker microservice for Self-BOT (Node.js)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "playwright": "^1.50.0",
+    "@fastify/formbody": "^8.0.0",
+    "pino": "^9.6.0",
+    "zod": "^3.22.4",
+    "dotenv": "^16.4.0",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

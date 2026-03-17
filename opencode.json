@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "meridian": {
+      "type": "remote",
+      "url": "http://localhost:8080/sse"
+    }
+  },
+  "agent": {
+    "orchestrator": {
+      "description": "Meridian Orchestrator — dispatches tasks to sub-agents, manages context transport, and coordinates streaming via MCP tools",
+      "mode": "primary",
+      "prompt": "{file:.opencode/agents/orchestrator.md}",
+      "tools": {
+        "meridian_*": true
+      },
+      "permission": {
+        "task": {
+          "architect": "allow",
+          "critic": "allow",
+          "implementer": "allow",
+          "tester": "allow",
+          "documenter": "allow"
+        }
+      },
+      "color": "#4fc3f7"
+    }
+  }
+}

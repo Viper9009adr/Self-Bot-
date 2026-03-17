@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+browser-worker/node_modules/
+
+# Build output
+dist/
+*.js.map
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+pino-*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bun
+bun.lockb
+bun.lock
+.bun/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Opencode
+.opencode/
+
+# OAuth token cache (contains sensitive credentials)
+.oauth-tokens.json
+.oauth-tokens.json.tmp
+
+# Access control allowlist (may contain user IDs)
+.allowlist.json

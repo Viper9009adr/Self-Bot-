@@ -76,7 +76,7 @@ An AI-powered Telegram bot with browser automation, MCP tool integration, and ex
 
 1. **Message Reception** — Telegram updates arrive via webhook or long-polling
 2. **Normalization** — Raw updates converted to `UnifiedMessage` format
-3. **Access Control** — `AccessGuard` checks the sender against the owner ID and allowlist; unauthorized messages are dropped or rejected before any further processing
+3. **Access Control** — `GatewayAuth` checks the sender against the owner ID and allowlist; unauthorized messages are dropped or rejected before any further processing. For permitted users, a short-lived HS256 JWT is issued and cached for downstream services.
 4. **Session Retrieval** — User session loaded from store (in-memory or Redis)
 5. **Agent Processing** — Message passed to AI agent with memory context
 6. **Tool Execution** — Agent decides which MCP tools to invoke
@@ -240,11 +240,14 @@ cp .env.example .env
 | `SESSION_STORE` | No | `memory` | Session backend: `memory` or `redis` |
 | `REDIS_URL` | When `SESSION_STORE=redis` | — | Redis connection string |
 | `MCP_SERVER_PORT` | No | `3001` | Port for the internal MCP server |
+| `MCP_REMOTE_SERVERS` | No | — | Remote MCP server base URLs to load at startup (JSON array or CSV — see [Remote MCP Servers](#remote-mcp-servers)) |
 | `LOG_LEVEL` | No | `info` | Log verbosity: `trace`, `debug`, `info`, `warn`, `error` |
 | `BOT_OWNER_ID` | **Yes** | — | Your Telegram user ID, platform-prefixed: `tg:123456789` |
-| `ALLOWLIST_PATH` | No | `.allowlist.json` | Path to the JSON file that stores granted users |
+| `ALLOWLIST_PATH` | No | `.allowlist.json` | Path to the JSON file that stores granted users (ignored when `MERIDIAN_MCP_URL` is set) |
 | `ACCESS_SILENT_REJECT` | No | `true` | `true` = silently drop unauthorized messages; `false` = send a rejection reply |
 | `ACCESS_REJECTION_MESSAGE` | No | `Access denied.` | Custom text sent when `ACCESS_SILENT_REJECT=false` |
+| `GATEWAY_JWT_SECRET` | No (required with `MERIDIAN_MCP_URL`) | — | HS256 JWT signing secret; must be ≥ 32 characters. Enables JWT issuance for permitted users. |
+| `MERIDIAN_MCP_URL` | No | — | Base URL of the Meridian MCP server (e.g. `https://meridian.example.com`). When set together with `GATEWAY_JWT_SECRET`, activates `MeridianAllowlistStore`. |
 
 ## Access Control
 
@@ -255,13 +258,40 @@ Self-BOT is a **personal bot**. By default every message from an unknown user is
 
 ### How it works
 
-Every incoming message passes through `AccessGuard` before reaching the AI agent:
+Every incoming message passes through `GatewayAuth` before reaching the AI agent:
 
-- If the sender is the owner → permitted.
+- If the sender is the owner → permitted (no store call; hard bypass).
 - If the sender is in the allowlist → permitted.
 - Otherwise → dropped (or rejected with a message if `ACCESS_SILENT_REJECT=false`).
 
 If the allowlist store throws an unexpected error, the guard **fails closed** — the message is dropped rather than accidentally permitted.
+
+For every permitted non-owner user, `GatewayAuth` issues an HS256 JWT (signed with `GATEWAY_JWT_SECRET`) and caches it in-memory for 24 hours. The JWT is available to downstream services via `getCachedToken(userId)` and is **not** used for the permission check itself — `store.isAllowed()` is always the authoritative source.
+
+**Known limitation:** A `/revoke` issued through this bot immediately purges the local JWT cache. However, revocations performed _directly_ on the Meridian server (bypassing this bot's `/revoke` command) are not reflected in the local cache until the affected JWT expires (TTL: 24 h).
+
+### Allowlist store selection (fallback chain)
+
+`GatewayAuth` selects its backing store at startup:
+
+| Condition | Store used |
+|-----------|-----------|
+| Both `MERIDIAN_MCP_URL` **and** `GATEWAY_JWT_SECRET` set | `MeridianAllowlistStore` — persists grants/revocations to a Meridian MCP server |
+| Either variable missing | `FileAllowlistStore` — persists to `.allowlist.json` (or `ALLOWLIST_PATH`) |
+
+If `MERIDIAN_MCP_URL` is set but `GATEWAY_JWT_SECRET` is absent, startup logs a warning and falls back to `FileAllowlistStore`. JWT issuance is disabled in that case.
+
+`MeridianAllowlistStore` populates an in-memory snapshot at startup and checks it on every `isAllowed()` call — no MCP round-trip per message. If the Meridian server is unreachable at startup, the snapshot starts empty (owner can still use the bot; other users cannot until the server recovers and the process restarts).
+
+### Meridian MCP configuration
+
+```env
+# Required for Meridian-backed allowlist + JWT issuance
+MERIDIAN_MCP_URL=https://meridian.example.com
+GATEWAY_JWT_SECRET=a-secret-at-least-32-characters-long
+```
+
+The `GATEWAY_JWT_SECRET` must be at least 32 characters. Startup will fail with a validation error if it is shorter.
 
 ### Finding your Telegram user ID
 
@@ -477,11 +507,49 @@ Logs into an existing account.
 }
 ```
 
+## Remote MCP Servers
+
+In addition to the built-in tools above, Self-BOT can connect to any number of external MCP servers at startup and make their tools available to the agent.
+
+### Configuration
+
+Set `MCP_REMOTE_SERVERS` in your `.env` to a list of server **base URLs** (not including the `/mcp` path — the client appends it automatically):
+
+**JSON array (recommended):**
+```env
+MCP_REMOTE_SERVERS=["https://mcp1.example.com","https://mcp2.example.com"]
+```
+
+**CSV fallback:**
+```env
+MCP_REMOTE_SERVERS=https://mcp1.example.com,https://mcp2.example.com
+```
+
+Both formats are accepted. JSON array is tried first; if the value does not start with `[` or JSON parsing fails, CSV parsing is used. Invalid entries are skipped with a warning rather than aborting startup.
+
+Only `http` and `https` URLs are accepted. URLs pointing to RFC-1918 private addresses or loopback (`127.x`, `10.x`, `172.16–31.x`, `192.168.x`, `::1`, `localhost`) are allowed but log a warning.
+
+### Startup behaviour
+
+For each URL in `MCP_REMOTE_SERVERS`:
+
+1. **Connect with retry** — up to 3 attempts with exponential backoff (500 ms base, factor 2). Failed attempts are logged as warnings.
+2. **Skip on failure** — if all retry attempts fail, the server is skipped and startup continues. Other servers and all built-in tools are unaffected.
+3. **Enumerate tools** — `listTools()` is called and every tool's name, description, and JSON Schema `inputSchema` are fetched.
+4. **Register tools** — each tool is wrapped as a `RemoteToolWrapper` and added to the `MCPToolRegistry`. Tools become immediately available to the agent.
+5. **Collision handling** — if a remote tool name is already registered (e.g. by a built-in tool or an earlier remote server), the duplicate is **skipped** with a warning. The existing tool is not overwritten.
+
+### Graceful shutdown
+
+All remote client connections are closed during graceful shutdown. Disconnect errors are logged as warnings and do not block the shutdown sequence.
+
+---
+
 ## Security Considerations
 
 ### Access Control
 
-All messages are gated by `AccessGuard` before reaching the AI agent. Only the owner (`BOT_OWNER_ID`) and explicitly granted users can interact with the bot. The guard fails closed — a store error drops the message rather than granting access. See [Access Control](#access-control) for full details.
+All messages are gated by `GatewayAuth` before reaching the AI agent. Only the owner (`BOT_OWNER_ID`) and explicitly granted users can interact with the bot. The guard fails closed — a store error drops the message rather than granting access. See [Access Control](#access-control) for full details.
 
 ### Webhook Verification
 
@@ -586,7 +654,9 @@ Self-BOT/
 │   │   ├── index.ts             # Barrel export
 │   │   ├── types.ts             # AllowlistEntry, AccessConfig, IAllowlistStore, makeGuardResponse
 │   │   ├── store.ts             # FileAllowlistStore — JSON-file-backed allowlist
-│   │   └── guard.ts             # AccessGuard — wraps MessageHandler with access control
+│   │   ├── guard.ts             # AccessGuard — original access guard (still exported)
+│   │   ├── gateway-auth.ts      # GatewayAuth — JWT-augmented guard (active in bootstrap)
+│   │   └── meridian-store.ts    # MeridianAllowlistStore — MCP-backed allowlist store
 │   ├── adapters/
 │   │   ├── base.ts              # IAdapter interface
 │   │   ├── registry.ts          # Adapter registry
@@ -596,7 +666,8 @@ Self-BOT/
 │   │       ├── normalizer.ts    # Message normalization
 │   │       └── responder.ts     # Response handler
 │   ├── agent/
-│   │   ├── index.ts             # Agent orchestrator
+│   │   ├── index.ts             # Agent orchestrator (AgentCore)
+│   │   ├── progress-reporter.ts # Telegram tool-call progress indicator
 │   │   ├── llm.ts               # LLM provider interface
 │   │   ├── cot.ts               # Chain-of-thought reasoning
 │   │   ├── memory.ts            # Conversation memory
@@ -615,9 +686,12 @@ Self-BOT/
 │   ├── mcp/
 │   │   ├── server.ts            # MCP server
 │   │   ├── registry.ts          # Tool registry
-│   │   ├── client.ts            # MCP client
+│   │   ├── client.ts            # MCP client (MCPClient, RemoteToolSchema)
+│   │   ├── remote-loader.ts     # RemoteMCPLoader — connects remote servers at startup
+│   │   ├── schema-utils.ts      # jsonSchemaToZod — JSON Schema → Zod conversion
 │   │   └── tools/
 │   │       ├── base.ts          # BaseTool class
+│   │       ├── remote-tool.ts   # RemoteToolWrapper — adapts remote tools as BaseTool
 │   │       ├── scrape-website.ts
 │   │       ├── fill-form.ts
 │   │       ├── book-appointment.ts

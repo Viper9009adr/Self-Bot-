@@ -38,6 +38,7 @@ function buildRawConfig(): Record<string, unknown> {
       maxSteps: process.env['AGENT_MAX_STEPS'],
       maxHistoryTokens: process.env['AGENT_MAX_HISTORY_TOKENS'],
       systemPromptExtra: process.env['AGENT_SYSTEM_PROMPT_EXTRA'] ?? '',
+      progressReporterPersistHistory: process.env['PROGRESS_REPORTER_PERSIST_HISTORY'],
     },
 
     session: {
@@ -52,6 +53,7 @@ function buildRawConfig(): Record<string, unknown> {
     mcp: {
       serverPort: process.env['MCP_SERVER_PORT'],
       serverHost: process.env['MCP_SERVER_HOST'],
+      remoteServers: process.env['MCP_REMOTE_SERVERS'],
     },
 
     browserWorker: {
@@ -69,6 +71,8 @@ function buildRawConfig(): Record<string, unknown> {
       allowlistPath: process.env['ALLOWLIST_PATH'],
       silentReject: process.env['ACCESS_SILENT_REJECT'],
       rejectionMessage: process.env['ACCESS_REJECTION_MESSAGE'],
+      gatewayJwtSecret: process.env['GATEWAY_JWT_SECRET'],
+      meridianMcpUrl:   process.env['MERIDIAN_MCP_URL'],
     },
   };
 }

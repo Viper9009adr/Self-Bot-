@@ -10,12 +10,40 @@ import { childLogger } from '../utils/logger.js';
 
 const log = childLogger({ module: 'mcp:client' });
 
+/** Configuration passed to {@link MCPClient} at construction time. */
 export interface MCPClientOptions {
+  /** Base URL of the remote MCP server (e.g. `https://mcp.example.com`). The client appends `/mcp` automatically. */
   serverUrl: string;
+  /** Name sent in the MCP client handshake. Defaults to `"self-bot-client"`. */
   clientName?: string;
+  /** Version sent in the MCP client handshake. Defaults to `"0.1.0"`. */
   clientVersion?: string;
 }
 
+/**
+ * Minimal tool descriptor returned by {@link MCPClient.listToolsWithSchema}.
+ * Mirrors the relevant fields of the MCP SDK `Tool` type, kept narrow so
+ * callers are not coupled to SDK internals.
+ */
+export interface RemoteToolSchema {
+  /** Unique tool name as declared by the remote server. */
+  name: string;
+  /** Human-readable description of what the tool does. */
+  description?: string;
+  /** JSON Schema object describing the tool's accepted input. */
+  inputSchema: Record<string, unknown>;
+}
+
+/**
+ * Thin wrapper around the MCP SDK `Client` that manages a single Streamable
+ * HTTP connection to a remote MCP server.
+ *
+ * Typical lifecycle:
+ * 1. `new MCPClient({ serverUrl })` — construct (no I/O yet)
+ * 2. `await client.connect()` — establish the transport and perform handshake
+ * 3. `await client.callTool(...)` / `await client.listToolsWithSchema()` — use
+ * 4. `await client.disconnect()` — close the transport gracefully
+ */
 export class MCPClient {
   private client: Client | null = null;
   private transport: StreamableHTTPClientTransport | null = null;
@@ -131,6 +159,27 @@ export class MCPClient {
       }));
     } catch (err) {
       log.error({ err }, 'Failed to list MCP tools');
+      return [];
+    }
+  }
+
+  /**
+   * List available tools on the remote MCP server, preserving the inputSchema.
+   */
+  async listToolsWithSchema(): Promise<RemoteToolSchema[]> {
+    if (!this.client || !this.connected) {
+      log.debug({ serverUrl: this.options.serverUrl }, 'listToolsWithSchema called on disconnected client');
+      return [];
+    }
+    try {
+      const response = await this.client.listTools();
+      return response.tools.map((t) => ({
+        name: t.name,
+        description: t.description ?? '',
+        inputSchema: (t.inputSchema ?? {}) as Record<string, unknown>,
+      }));
+    } catch (err) {
+      log.warn({ err, serverUrl: this.options.serverUrl }, 'Failed to list MCP tools with schema');
       return [];
     }
   }

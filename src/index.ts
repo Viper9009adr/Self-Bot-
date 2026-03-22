@@ -13,15 +13,18 @@ import { MCPToolRegistry } from './mcp/registry.js';
 import { MCPServer } from './mcp/server.js';
 import { TaskQueue } from './queue/task-queue.js';
 import { AgentCore } from './agent/index.js';
+import { ProgressReporter } from './agent/progress-reporter.js';
 import { OAuthManager } from './auth/index.js';
 import { ScrapeWebsiteTool } from './mcp/tools/scrape-website.js';
 import { FillFormTool } from './mcp/tools/fill-form.js';
 import { LoginAccountTool } from './mcp/tools/login-account.js';
 import { RegisterAccountTool } from './mcp/tools/register-account.js';
 import { BookAppointmentTool } from './mcp/tools/book-appointment.js';
+import { RemoteMCPLoader } from './mcp/remote-loader.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
-import { AccessGuard, FileAllowlistStore } from './access/index.js';
+import { GatewayAuth, FileAllowlistStore, MeridianAllowlistStore } from './access/index.js';
+import type { IAllowlistStore } from './access/index.js';
 import type { MessageHandler } from './adapters/base.js';
 
 // ─── ShutdownManager ──────────────────────────────────────────────────────────
@@ -136,6 +139,11 @@ async function bootstrap(): Promise<void> {
   ]);
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
 
+  // ── 3b. Remote MCP Tools ─────────────────────────────────────────────────
+  const remoteMCPLoader = new RemoteMCPLoader(toolRegistry, config.mcp.remoteServers);
+  await remoteMCPLoader.load();
+  shutdown.register(async () => await remoteMCPLoader.dispose());
+
   // ── 4. Task Queue ────────────────────────────────────────────────────────
   const taskQueue = new TaskQueue(config);
 
@@ -168,16 +176,35 @@ async function bootstrap(): Promise<void> {
     await mcpServer.stop();
   });
 
-  // ── 6b. Access Guard ──────────────────────────────────────────────────────
-  const allowlistStore = new FileAllowlistStore(config.access.allowlistPath);
+  // ── 6b. GatewayAuth (replaces AccessGuard) ───────────────────────────────
+  // Warn if operator set MERIDIAN_MCP_URL but forgot GATEWAY_JWT_SECRET
+  if (config.access.meridianMcpUrl && !config.access.gatewayJwtSecret) {
+    log.warn(
+      'MERIDIAN_MCP_URL is set but GATEWAY_JWT_SECRET is absent — ' +
+      'falling back to FileAllowlistStore; JWT issuance disabled.',
+    );
+  }
+
+  // Select store: Meridian MCP (both env vars required) or file-backed fallback
+  let allowlistStore: IAllowlistStore;
+  if (config.access.meridianMcpUrl && config.access.gatewayJwtSecret) {
+    // NOTE: allowlistPath not passed to MeridianAllowlistStore — it handles its own persistence
+    allowlistStore = new MeridianAllowlistStore(config.access.meridianMcpUrl);
+    log.info({ meridianMcpUrl: config.access.meridianMcpUrl }, 'Using MeridianAllowlistStore');
+  } else {
+    allowlistStore = new FileAllowlistStore(config.access.allowlistPath);
+    log.info({ allowlistPath: config.access.allowlistPath }, 'Using FileAllowlistStore');
+  }
   await allowlistStore.load();
 
-  const accessGuard = new AccessGuard(allowlistStore, {
-    ownerUserId: config.access.ownerUserId,
-    allowlistPath: config.access.allowlistPath,
+  const gatewayAuth = new GatewayAuth(allowlistStore, {
+    ownerUserId:  config.access.ownerUserId,
     silentReject: config.access.silentReject,
     ...(config.access.rejectionMessage !== undefined
       ? { rejectionMessage: config.access.rejectionMessage }
+      : {}),
+    ...(config.access.gatewayJwtSecret !== undefined
+      ? { gatewayJwtSecret: config.access.gatewayJwtSecret }
       : {}),
   });
 
@@ -218,7 +245,7 @@ async function bootstrap(): Promise<void> {
 
       // Show typing indicator for Telegram
       if (message.platform.platform === 'telegram') {
-        telegramAdapter['bot']?.api
+        telegramAdapter.getApi()
           ?.sendChatAction?.(
             (message.platform as { chatId: number }).chatId,
             'typing',
@@ -226,7 +253,54 @@ async function bootstrap(): Promise<void> {
           .catch(() => undefined);
       }
 
-      const response: UnifiedResponse = await agent.handleMessage(message);
+      // Wire ProgressReporter for Telegram messages.
+      // For each Telegram message a ProgressReporter is created and initialised
+      // (sends the "⏳ Working…" indicator). Two hook closures are built:
+      //   startHook — fired when a tool step begins  → edits message to "⚙ Step N — …"
+      //   doneHook  — fired when a tool step finishes → edits message to "✓ Step N done (Xms) — …"
+      // On cleanup (success or error), any remaining ⚙ lines become "⚠ Step N interrupted"
+      // and the message is left in place (not deleted). Non-Telegram paths leave reporter null
+      // and both hooks undefined, so AgentCore skips them entirely.
+      let reporter: ProgressReporter | null = null;
+      const progressMode: 'single' | 'history' = config.agent.progressReporterPersistHistory
+        ? 'history'
+        : 'single';
+      const tgApi = message.platform.platform === 'telegram'
+        ? telegramAdapter.getApi()
+        : undefined;
+
+      if (tgApi && message.platform.platform === 'telegram') {
+        const chatId = (message.platform as { chatId: number }).chatId;
+        reporter = new ProgressReporter(tgApi, chatId, progressMode);
+        await reporter.init();
+      }
+
+      const startHook = reporter
+        ? (stepN: number, toolName: string, args: Record<string, unknown>) =>
+            reporter!.onStepStart(stepN, toolName, args)
+        : undefined;
+
+      const doneHook = reporter
+        ? (stepN: number, toolName: string, durationMs: number, result: unknown) =>
+            reporter!.onStepDone(stepN, toolName, durationMs, result)
+        : undefined;
+
+      let response: UnifiedResponse;
+      try {
+        response = await agent.handleMessage(message, undefined, startHook, doneHook);
+      } finally {
+        if (reporter) await reporter.cleanup().catch(() => undefined);
+      }
+
+      // Telegram-specific single-mode finalization gate:
+      // if progress message edit to final response succeeds, skip adapter send to avoid duplicate.
+      if (message.platform.platform === 'telegram' && progressMode === 'single' && reporter) {
+        if (response.format === 'text' || response.format === 'markdown') {
+          const finalized = await reporter.finalizeToResponse(response.text, response.format);
+          if (finalized) return;
+        }
+      }
+
       await adapterRegistry.sendResponse(response);
     } catch (err) {
       childLog.error({ err }, 'Failed to handle message');
@@ -247,7 +321,7 @@ async function bootstrap(): Promise<void> {
     }
   };
 
-  const guardedHandler = accessGuard.wrap(
+  const guardedHandler = gatewayAuth.wrap(
     rawHandler,
     (r) => adapterRegistry.sendResponse(r),
   );

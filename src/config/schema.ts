@@ -86,6 +86,11 @@ export const ConfigSchema = z.object({
     maxSteps: z.coerce.number().int().min(1).max(50).default(10),
     maxHistoryTokens: z.coerce.number().int().min(100).default(8000),
     systemPromptExtra: z.string().default(''),
+    progressReporterPersistHistory: z
+      .enum(['true', 'false'])
+      .optional()
+      .default('false')
+      .transform((v) => v === 'true'),
   }),
 
   // ── Session ───────────────────────────────────────────────────────────────
@@ -103,6 +108,7 @@ export const ConfigSchema = z.object({
   mcp: z.object({
     serverPort: z.coerce.number().int().min(1).max(65535).default(3001),
     serverHost: z.string().default('127.0.0.1'),
+    remoteServers: z.string().optional(),
   }),
 
   // ── Browser Worker ────────────────────────────────────────────────────────
@@ -126,6 +132,14 @@ export const ConfigSchema = z.object({
     allowlistPath: z.string().default('.allowlist.json'),
     silentReject: z.coerce.boolean().default(true),
     rejectionMessage: z.string().optional(),
+    /** HS256 JWT signing secret. Must be ≥32 chars. Required when MERIDIAN_MCP_URL is set. */
+    gatewayJwtSecret: z
+      .string()
+      .min(32, 'GATEWAY_JWT_SECRET must be at least 32 characters')
+      .transform((v) => secret(v))
+      .optional(),
+    /** Base URL of the Meridian MCP server. When set, activates MeridianAllowlistStore. */
+    meridianMcpUrl: z.string().url().optional(),
   }),
 });
 

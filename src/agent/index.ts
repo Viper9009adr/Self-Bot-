@@ -21,6 +21,21 @@ import { nanoid } from 'nanoid';
 
 const log = childLogger({ module: 'agent:core' });
 const LLM_TIMEOUT_MS = 90_000;
+const EMPTY_RESPONSE_WARNING = '⚠️ I was unable to generate a response. This may be due to an authentication or API issue. Please check the bot logs for details.';
+/**
+ * Prefixes commonly produced by iterative/tool-planning text blocks.
+ *
+ * When selecting the final user-facing response, leading paragraphs matching
+ * these patterns are stripped while preserving the remaining paragraph structure.
+ */
+const ITERATIVE_PREFIX_PATTERNS: readonly RegExp[] = [
+  /^(I'll|I will)\b/i,
+  /^Let me\b/i,
+  /^Great!\b/i,
+  /^Now\b/i,
+  /^Next\b/i,
+  /^Based on (my|the) search,? let me\b/i,
+];
 
 export interface AgentCoreOptions {
   config: Config;
@@ -41,6 +56,16 @@ export interface AgentResponse {
  * Callback for streaming intermediate results to the user.
  */
 export type StreamCallback = (chunk: string, isFinal: boolean) => Promise<void>;
+
+/**
+ * Called when a tool step begins. stepN is the 1-based atomic step counter.
+ */
+export type StartHook = (stepN: number, toolName: string, args: Record<string, unknown>) => Promise<void>;
+
+/**
+ * Called when a tool step completes. stepN matches the corresponding StartHook call.
+ */
+export type DoneHook = (stepN: number, toolName: string, durationMs: number, result: unknown) => Promise<void>;
 
 export class AgentCore {
   private readonly config: Config;
@@ -83,10 +108,22 @@ export class AgentCore {
    * 6. Collect final text response
    * 7. Save updated session
    * 8. Return UnifiedResponse
+   *
+   * @param message - The normalized incoming message.
+   * @param streamCallback - Optional callback invoked with each streamed text chunk
+   *   and a final `isFinal=true` call when the full response is ready.
+   * @param startHook - Optional callback fired (fire-and-forget) at the start of each
+   *   tool execution, before the TaskQueue enqueue. Receives the atomic 1-based stepN,
+   *   tool name, and input args. Used by ProgressReporter on Telegram; ignored elsewhere.
+   * @param doneHook - Optional callback fired after each tool execution completes, before
+   *   returning the result. Receives stepN, tool name, durationMs, and the raw result.
+   *   Errors are silently swallowed.
    */
   async handleMessage(
     message: UnifiedMessage,
     streamCallback?: StreamCallback,
+    startHook?: StartHook,
+    doneHook?: DoneHook,
   ): Promise<UnifiedResponse> {
     const startMs = Date.now();
     const taskId = this.sessionManager.generateTaskId();
@@ -154,9 +191,11 @@ export class AgentCore {
       });
 
       // 4. Convert registry tools to AI SDK format
-      const aiSdkTools = this.buildAISdkTools(message.userId, taskId, message.conversationId);
+      const stepCounter = { count: 0 };
+      const aiSdkTools = this.buildAISdkTools(message.userId, taskId, message.conversationId, stepCounter, startHook, doneHook);
 
-      let fullText = '';
+      let streamBuffer = '';
+      let lastStepTextNoToolCalls = '';
       let toolCallCount = 0;
 
       // Resolve model (per-request for claude-oauth to handle token refresh)
@@ -252,14 +291,20 @@ export class AgentCore {
             if (streamCallback && step.text) {
               await streamCallback(step.text, false);
             }
+
+            if (step.text && (!step.toolCalls || step.toolCalls.length === 0)) {
+              lastStepTextNoToolCalls = step.text;
+            }
           },
         });
 
         try {
           // Collect streaming text
           for await (const chunk of result.textStream) {
-            fullText += chunk;
+            streamBuffer += chunk;
             if (streamCallback) {
+              // Isolate callback transport/reporting failures from core generation.
+              // A callback error must not abort stream consumption.
               await streamCallback(chunk, false).catch((err: unknown) => {
                 childLog.warn({ err }, 'Stream callback error');
               });
@@ -269,16 +314,37 @@ export class AgentCore {
           clearTimeout(timeout);
         }
 
-        // Ensure we have the final text
-        const finalText = await result.text;
-        if (finalText && finalText !== fullText) {
-          fullText = finalText;
+        const resultText = await result.text;
+
+        const selectedCandidate = this.selectFinalTextCandidate(
+          resultText,
+          lastStepTextNoToolCalls,
+          streamBuffer,
+        );
+        let selectedFinal = selectedCandidate;
+        if (!selectedFinal.trim()) {
+          selectedFinal = EMPTY_RESPONSE_WARNING;
+        }
+
+        // Strip internal CoT reasoning blocks before sending to user.
+        // Applied exactly once on the selected final text.
+        const rawText = selectedFinal;
+        let fullText = stripCoTBlocks(selectedFinal);
+        if (!fullText.trim()) {
+          fullText = EMPTY_RESPONSE_WARNING;
+        }
+
+        if (streamCallback) {
+          // Final callback errors are logged but do not fail the request.
+          await streamCallback(fullText, true).catch((err: unknown) => {
+            childLog.warn({ err }, 'Final stream callback error');
+          });
         }
 
         // Check for warnings/errors the SDK may have captured silently.
         // If the stream produced no text and no tool calls, it likely means
         // the API returned an error (e.g. 403/404) that was silently consumed.
-        if (!fullText.trim() && toolCallCount === 0) {
+        if (!selectedCandidate.trim() && toolCallCount === 0) {
           if (streamError) {
             const errMsg = streamError instanceof Error ? streamError.message : String(streamError);
             childLog.error({ err: streamError }, 'LLM stream failed silently');
@@ -286,6 +352,36 @@ export class AgentCore {
           }
           childLog.warn('LLM stream produced no text and no tool calls — possible silent API error');
         }
+
+        // 6. Append assistant response to history (post-strip text)
+        await this.sessionManager.appendMessage(message.userId, {
+          role: 'assistant',
+          content: fullText,
+        });
+
+        const durationMs = Date.now() - startMs;
+        childLog.info(
+          {
+            durationMs,
+            toolCallCount,
+            rawLength: rawText.length,
+            cleanedLength: fullText.length,
+            cotStripped: rawText.length !== fullText.length,
+          },
+          `✅ Message handled (${toolCallCount} tool calls, ${durationMs}ms)`,
+        );
+
+        // 7. Build UnifiedResponse
+        const response: UnifiedResponse = {
+          inReplyTo: message.id,
+          userId: message.userId,
+          conversationId: message.conversationId,
+          text: fullText,
+          format: 'markdown',
+          platform: message.platform,
+        };
+
+        return response;
 
       } catch (llmErr) {
         const normalized = normalizeError(llmErr);
@@ -296,48 +392,6 @@ export class AgentCore {
         });
       }
 
-      if (!fullText.trim()) {
-        fullText = '⚠️ I was unable to generate a response. This may be due to an authentication or API issue. Please check the bot logs for details.';
-      }
-
-      // Strip internal CoT reasoning blocks before sending to user.
-      // The raw text (with CoT) is kept in memory for better conversation continuity.
-      const rawText = fullText;
-      fullText = stripCoTBlocks(fullText);
-
-      // 6. Append assistant response to history (keep raw for context continuity)
-      await this.sessionManager.appendMessage(message.userId, {
-        role: 'assistant',
-        content: fullText,
-      });
-
-      const durationMs = Date.now() - startMs;
-      childLog.info(
-        {
-          durationMs,
-          toolCallCount,
-          rawLength: rawText.length,
-          cleanedLength: fullText.length,
-          cotStripped: rawText.length !== fullText.length,
-        },
-        `✅ Message handled (${toolCallCount} tool calls, ${durationMs}ms)`,
-      );
-
-      // 7. Build UnifiedResponse
-      const response: UnifiedResponse = {
-        inReplyTo: message.id,
-        userId: message.userId,
-        conversationId: message.conversationId,
-        text: fullText,
-        format: 'markdown',
-        platform: message.platform,
-      };
-
-      if (streamCallback) {
-        await streamCallback(fullText, true);
-      }
-
-      return response;
     } finally {
       // Always remove active task tracking
       await this.sessionManager.removeActiveTask(message.userId, taskId);
@@ -345,13 +399,75 @@ export class AgentCore {
   }
 
   /**
+   * Select the best final response text from SDK outputs.
+   *
+   * Preference order is: resolved `result.text`, last step text without tool calls,
+   * then raw concatenated stream chunks. Each candidate is normalized and cleaned
+   * by `filterFinalTextCandidate()` before selection.
+   */
+  private selectFinalTextCandidate(
+    resultText: string,
+    lastStepTextNoToolCalls: string,
+    streamBuffer: string,
+  ): string {
+    const candidates = [resultText, lastStepTextNoToolCalls, streamBuffer];
+    for (const candidate of candidates) {
+      const filtered = this.filterFinalTextCandidate(candidate);
+      if (filtered) {
+        return filtered;
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Normalize and clean a candidate response for user delivery.
+   *
+   * Leading iterative/planning boilerplate paragraphs are removed, while all
+   * remaining paragraphs are preserved and rejoined with blank-line separation.
+   */
+  private filterFinalTextCandidate(candidate: string): string {
+    if (!candidate || !candidate.trim()) {
+      return '';
+    }
+
+    const normalized = candidate
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+    const paragraphs = normalized
+      .split(/\n\s*\n+/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph.length > 0);
+
+    while (paragraphs.length > 0 && ITERATIVE_PREFIX_PATTERNS.some((pattern) => pattern.test(paragraphs[0]!))) {
+      paragraphs.shift();
+    }
+
+    if (paragraphs.length === 0) {
+      return '';
+    }
+
+    return paragraphs.join('\n\n');
+  }
+
+  /**
    * Build Vercel AI SDK tool definitions from the registry.
    * Each tool's execute function runs through the TaskQueue.
+   *
+   * @param stepCounter - Shared mutable counter incremented atomically per tool call,
+   *   producing the 1-based stepN passed to startHook and doneHook.
+   * @param startHook - Fired (fire-and-forget) immediately before TaskQueue enqueue.
+   * @param doneHook - Fired after tool execution completes, inside the TaskQueue closure.
+   *   Both hooks are optional; errors from either are silently swallowed.
    */
   private buildAISdkTools(
     userId: string,
     taskId: string,
     conversationId: string,
+    stepCounter: { count: number },
+    startHook: StartHook | undefined,
+    doneHook: DoneHook | undefined,
   ): Record<string, {
     description: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -373,6 +489,10 @@ export class AgentCore {
         description: tool.description,
         parameters: tool.inputSchema,
         execute: async (input: Record<string, unknown>) => {
+          const myStep = ++stepCounter.count;
+
+          startHook?.(myStep, toolName, input).catch(() => undefined);
+
           const context: ToolContext = {
             userId,
             taskId: `${taskId}-${toolName}-${nanoid(6)}`,
@@ -394,6 +514,7 @@ export class AgentCore {
               { tool: toolName, durationMs, success: (result as { success?: boolean }).success },
               `⚙️  Tool ${toolName} finished (${durationMs}ms)`,
             );
+            await doneHook?.(myStep, toolName, durationMs, result).catch(() => undefined);
             return result;
           });
         },

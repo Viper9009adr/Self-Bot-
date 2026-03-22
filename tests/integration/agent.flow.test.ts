@@ -14,7 +14,7 @@ import { ToolErrorCode } from '../../src/types/tool.js';
 
 // ─── Mock Vercel AI SDK ───────────────────────────────────────────────────────
 // We mock the 'ai' module to avoid real LLM calls
-const mockStreamText = mock(async (options: {
+const mockStreamText = mock((options: {
   system: string;
   messages: unknown[];
   tools?: Record<string, unknown>;
@@ -25,7 +25,7 @@ const mockStreamText = mock(async (options: {
 
   // Call onStepFinish if provided (simulate a step)
   if (options.onStepFinish) {
-    await options.onStepFinish({ toolCalls: [], text: responseText });
+    void options.onStepFinish({ toolCalls: [], text: responseText });
   }
 
   async function* textGen() {
@@ -273,7 +273,7 @@ describe('AgentCore integration', () => {
 
   describe('error handling', () => {
     it('handles LLM error gracefully', async () => {
-      mockStreamText.mockImplementationOnce(async () => {
+      mockStreamText.mockImplementationOnce(() => {
         throw new Error('LLM API error');
       });
 

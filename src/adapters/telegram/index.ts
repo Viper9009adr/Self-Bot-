@@ -134,4 +134,12 @@ export class TelegramAdapter implements IAdapter {
   getUserConcurrency(userId: string): number {
     return this.userConcurrency.get(userId) ?? 0;
   }
+
+  /**
+   * Returns the Grammy Bot API instance, or undefined if not yet initialized.
+   * Used by ProgressReporter to send/edit progress messages without private field access.
+   */
+  public getApi(): import('grammy').Api | undefined {
+    return this.bot?.api;
+  }
 }

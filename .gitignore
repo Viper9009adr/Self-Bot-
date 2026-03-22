@@ -89,3 +89,6 @@ test-oauth.ts
 
 # AI session logs (may contain sensitive context)
 .implementations/
+
+# Development-only scripts and tools
+Meridian/

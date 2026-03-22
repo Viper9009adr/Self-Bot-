@@ -149,12 +149,13 @@ describe('ScrapeWebsiteTool', () => {
 
     it('respects maxChars limit', async () => {
       const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'text', maxChars: 20, waitForJs: false, timeoutMs: 5000 },
+        { url: 'https://test.example.com', extractMode: 'text', maxChars: 200, waitForJs: false, timeoutMs: 5000 },
         testContext,
       );
 
+      expect(result.success).toBe(true);
       const data = result.data as Record<string, unknown>;
-      expect((data['text'] as string).length).toBeLessThanOrEqual(25); // includes ellipsis
+      expect((data['text'] as string).length).toBeLessThanOrEqual(200); // includes ellipsis
     });
   });
 

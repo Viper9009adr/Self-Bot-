@@ -92,6 +92,10 @@ export interface ToolContext {
   /** Logger instance (passed from AgentCore) */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logger?: any;
+  /** Callback to deliver a generated image to the user. Populated per-request by AgentCore. */
+  onImageGenerated?: (imageBase64: string, mimeType: string) => void;
+  /** Callback to deliver synthesized speech to the user. Populated per-request by AgentCore. */
+  onAudioGenerated?: (audioBase64: string, mimeType: string) => void;
 }
 
 // ─── MCPToolDefinition ───────────────────────────────────────────────────────

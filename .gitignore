@@ -44,6 +44,7 @@ test-results/
 
 # Opencode
 .opencode/
+opencode.json
 
 # OAuth token cache (contains sensitive credentials)
 .oauth-tokens.json
@@ -92,3 +93,11 @@ test-oauth.ts
 
 # Development-only scripts and tools
 Meridian/
+
+# Web frontend
+web/dist/
+web/node_modules/
+
+# Whatsapp Integration
+.whatsapp-session/
+.wwebjs_cache/

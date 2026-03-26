@@ -18,7 +18,7 @@ export type MessageHandlerDisposer = () => void;
  * Each platform (Telegram, CLI, API, etc.) must implement this.
  */
 export interface IAdapter {
-  /** Unique identifier for this adapter (e.g. 'telegram', 'cli') */
+  /** Unique identifier for this adapter (e.g. 'telegram', 'whatsapp', 'web') */
   readonly name: string;
 
   /** Initialize the adapter (connect to platform, set up webhooks/polling) */

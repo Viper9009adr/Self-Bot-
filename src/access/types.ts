@@ -62,6 +62,8 @@ export interface IAllowlistStore {
 export interface AccessConfig {
   /** Platform-prefixed user ID of the bot owner (e.g. `"tg:123456789"`). */
   ownerUserId: string;
+  /** Platform-prefixed owner identities across all enabled platforms. When set, isOwner() uses this Set instead of ownerUserId string comparison. */
+  ownerUserIds?: Set<string>;
   /** Filesystem path to the JSON allowlist file (e.g. `".allowlist.json"`). */
   allowlistPath: string;
   /**

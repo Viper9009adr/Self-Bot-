@@ -20,6 +20,8 @@ export interface FileAttachment extends BaseAttachment {
   fileName?: string | undefined;
   /** Base64-encoded content if pre-fetched */
   data?: string | undefined;
+  /** Distinguishes platform voice notes ('voice') from generic audio files ('audio') */
+  audioSubtype?: 'voice' | 'audio';
 }
 
 export interface LocationAttachment extends BaseAttachment {
@@ -44,18 +46,24 @@ export interface TelegramMetadata {
   rawUpdate?: unknown;
 }
 
-export interface CliMetadata {
-  platform: 'cli';
-  sessionId: string;
+export interface WhatsAppMetadata {
+  platform: 'whatsapp';
+  phoneNumber: string;
+  chatId: string;
+  isGroup: boolean;
+  contactName?: string | undefined;
 }
 
-export interface ApiMetadata {
-  platform: 'api';
+export interface WebMetadata {
+  platform: 'web';
+  rawJwt: string;
+  username: string;
   requestId: string;
   sourceIp?: string | undefined;
+  userAgent?: string | undefined;
 }
 
-export type PlatformMetadata = TelegramMetadata | CliMetadata | ApiMetadata;
+export type PlatformMetadata = TelegramMetadata | WhatsAppMetadata | WebMetadata;
 
 // ─── UnifiedMessage ───────────────────────────────────────────────────────────
 export interface UnifiedMessage {

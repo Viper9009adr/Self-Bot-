@@ -9,6 +9,8 @@ import { createSessionStore } from './session/store.js';
 import { SessionManager } from './session/manager.js';
 import { AdapterRegistry } from './adapters/registry.js';
 import { TelegramAdapter } from './adapters/telegram/index.js';
+import { WhatsAppAdapter } from './adapters/whatsapp/index.js';
+import { WebAdapter } from './adapters/website/index.js';
 import { MCPToolRegistry } from './mcp/registry.js';
 import { MCPServer } from './mcp/server.js';
 import { TaskQueue } from './queue/task-queue.js';
@@ -21,8 +23,16 @@ import { LoginAccountTool } from './mcp/tools/login-account.js';
 import { RegisterAccountTool } from './mcp/tools/register-account.js';
 import { BookAppointmentTool } from './mcp/tools/book-appointment.js';
 import { RemoteMCPLoader } from './mcp/remote-loader.js';
+import { createMediaService } from './media/index.js';
+import { fetchTelegramFile } from './adapters/telegram/file-fetcher.js';
+import { waUserId } from './adapters/whatsapp/normalizer.js';
+import { GenerateImageTool } from './mcp/tools/generate-image.js';
+import { EditImageTool } from './mcp/tools/edit-image.js';
+import { TranscribeAudioTool } from './mcp/tools/transcribe-audio.js';
+import { SynthesizeSpeechTool } from './mcp/tools/synthesize-speech.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
+import type { FileAttachment } from './types/message.js';
 import { GatewayAuth, FileAllowlistStore, MeridianAllowlistStore } from './access/index.js';
 import type { IAllowlistStore } from './access/index.js';
 import type { MessageHandler } from './adapters/base.js';
@@ -80,6 +90,14 @@ async function bootstrap(): Promise<void> {
     'Configuration loaded',
   );
 
+  // ── 1a. Media Service ─────────────────────────────────────────────────────
+  const mediaService = createMediaService(config);
+  if (mediaService) {
+    log.info('MediaService initialized');
+  } else {
+    log.info('MediaService unavailable (no OPENAI_API_KEY)');
+  }
+
   // ── 1b. OAuth bootstrap (claude-oauth provider) ───────────────────────────
   let oauthManager: OAuthManager | undefined;
   if (config.llm.provider === 'claude-oauth') {
@@ -114,9 +132,12 @@ async function bootstrap(): Promise<void> {
   }
 
   // ── 2. Session store + manager ───────────────────────────────────────────
-  const sessionStore = createSessionStore(config.session.store, {
+  const sessionStore = await createSessionStore(config.session.store, {
     ttlSeconds: config.session.ttlSeconds,
     redisUrl: config.redis.url,
+    ...(config.session.meridianUrl !== undefined
+      ? { meridianUrl: config.session.meridianUrl }
+      : {}),
   });
   const sessionManager = new SessionManager({
     store: sessionStore,
@@ -136,6 +157,10 @@ async function bootstrap(): Promise<void> {
     new LoginAccountTool(),
     new RegisterAccountTool(),
     new BookAppointmentTool(),
+    new GenerateImageTool(mediaService),
+    new EditImageTool(mediaService),
+    new TranscribeAudioTool(mediaService),
+    new SynthesizeSpeechTool(mediaService),
   ]);
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
 
@@ -161,6 +186,7 @@ async function bootstrap(): Promise<void> {
     toolRegistry,
     taskQueue,
     oauthManager,
+    mediaService: mediaService ?? undefined,
   });
 
   // ── 6. MCP Server ─────────────────────────────────────────────────────────
@@ -177,19 +203,11 @@ async function bootstrap(): Promise<void> {
   });
 
   // ── 6b. GatewayAuth (replaces AccessGuard) ───────────────────────────────
-  // Warn if operator set MERIDIAN_MCP_URL but forgot GATEWAY_JWT_SECRET
-  if (config.access.meridianMcpUrl && !config.access.gatewayJwtSecret) {
-    log.warn(
-      'MERIDIAN_MCP_URL is set but GATEWAY_JWT_SECRET is absent — ' +
-      'falling back to FileAllowlistStore; JWT issuance disabled.',
-    );
-  }
-
-  // Select store: Meridian MCP (both env vars required) or file-backed fallback
+  // Select store: explicit via ALLOWLIST_STORE env var (meridianMcpUrl guaranteed by validateAllowlistStore)
   let allowlistStore: IAllowlistStore;
-  if (config.access.meridianMcpUrl && config.access.gatewayJwtSecret) {
-    // NOTE: allowlistPath not passed to MeridianAllowlistStore — it handles its own persistence
-    allowlistStore = new MeridianAllowlistStore(config.access.meridianMcpUrl);
+  if (config.access.allowlistStore === 'meridian') {
+    // meridianMcpUrl guaranteed present by validateAllowlistStore()
+    allowlistStore = new MeridianAllowlistStore(config.access.meridianMcpUrl!);
     log.info({ meridianMcpUrl: config.access.meridianMcpUrl }, 'Using MeridianAllowlistStore');
   } else {
     allowlistStore = new FileAllowlistStore(config.access.allowlistPath);
@@ -197,8 +215,19 @@ async function bootstrap(): Promise<void> {
   }
   await allowlistStore.load();
 
+  // Build multi-platform owner identity Set
+  const ownerUserIds = new Set<string>([config.access.ownerUserId]);
+  if (config.website) {
+    ownerUserIds.add(`web:${config.website.ownerUsername}`);
+  }
+  if (config.whatsapp?.enabled && config.whatsapp.ownerNumber) {
+    ownerUserIds.add(waUserId(config.whatsapp.ownerNumber));
+  }
+  log.info({ ownerUserIds: [...ownerUserIds] }, 'Owner identities configured');
+
   const gatewayAuth = new GatewayAuth(allowlistStore, {
     ownerUserId:  config.access.ownerUserId,
+    ownerUserIds,
     silentReject: config.access.silentReject,
     ...(config.access.rejectionMessage !== undefined
       ? { rejectionMessage: config.access.rejectionMessage }
@@ -217,6 +246,20 @@ async function bootstrap(): Promise<void> {
   const adapterRegistry = new AdapterRegistry();
   const telegramAdapter = new TelegramAdapter(config);
   adapterRegistry.register(telegramAdapter);
+
+  // ── WhatsApp Adapter (optional) ──────────────────────────────────────────
+  if (config.whatsapp?.enabled) {
+    const whatsappAdapter = new WhatsAppAdapter(config);
+    adapterRegistry.register(whatsappAdapter);
+    log.info('WhatsApp adapter registered');
+  }
+
+  // ── Website Adapter (optional) ───────────────────────────────────────────
+  if (config.website?.enabled) {
+    const webAdapter = new WebAdapter(config, sessionManager, allowlistStore);
+    adapterRegistry.register(webAdapter);
+    log.info('Website adapter registered');
+  }
 
   shutdown.register(async () => {
     log.info('Shutting down adapters');
@@ -242,6 +285,115 @@ async function bootstrap(): Promise<void> {
           return;
         }
       }
+
+      // Shadow copy to allow text mutation without touching original message reference
+      let currentMessage = message;
+
+      // Fetch Telegram image attachments (populate .data field for vision)
+      if (message.platform.platform === 'telegram') {
+        const tgToken = config.telegram.botToken as unknown as string;
+        const tgApi = telegramAdapter.getApi();
+        if (tgApi) {
+          for (const att of message.attachments) {
+            if (att.type === 'image' && 'fileId' in att && att.fileId && !('data' in att && att.data)) {
+              try {
+                const fetched = await fetchTelegramFile(tgApi, tgToken, att.fileId);
+                (att as FileAttachment).data = fetched.data.toString('base64');
+                if (fetched.mimeType && !att.mimeType) {
+                  (att as FileAttachment).mimeType = fetched.mimeType;
+                }
+              } catch (err) {
+                childLog.warn({ err, fileId: att.fileId }, 'Failed to fetch Telegram image attachment');
+              }
+            }
+          }
+        }
+      }
+
+      // STT: fetch and transcribe Telegram audio attachments
+      if (message.platform.platform === 'telegram' && mediaService) {
+        const tgApiForAudio = telegramAdapter.getApi();
+        const tgTokenForAudio = config.telegram.botToken as unknown as string;
+        for (const att of currentMessage.attachments) {
+          if (att.type === 'audio' && 'fileId' in att && (att as FileAttachment).fileId && !((att as FileAttachment).data)) {
+            try {
+              const fetched = await fetchTelegramFile(tgApiForAudio!, tgTokenForAudio, (att as FileAttachment).fileId);
+              (att as FileAttachment).data = fetched.data.toString('base64');
+              if (fetched.mimeType && !(att as FileAttachment).mimeType) {
+                (att as FileAttachment).mimeType = fetched.mimeType;
+              }
+              // Inject transcript into message text
+              const transcript = await mediaService.transcribeAudio(fetched.data, fetched.mimeType ?? 'audio/ogg');
+              const transcriptPrefix = `[Transcript: ${transcript.text}]`;
+              currentMessage = {
+                ...currentMessage,
+                text: currentMessage.text.trim()
+                  ? `${transcriptPrefix}\n${currentMessage.text}`
+                  : transcriptPrefix,
+              };
+            } catch (err) {
+              childLog.warn({ err }, 'Failed to fetch/transcribe Telegram audio attachment');
+            }
+          }
+        }
+      }
+
+      // WhatsApp document gate: keep text flow, reject unknown-size/unsupported/oversize documents.
+      if (currentMessage.platform.platform === 'whatsapp' && currentMessage.attachments.length > 0) {
+        const waDocumentMaxBytes = config.whatsapp?.documentMaxBytes ?? (10 * 1024 * 1024);
+        const warnings: string[] = [];
+        const allowedAttachments: import('./types/message.js').Attachment[] = [];
+
+        for (const att of currentMessage.attachments) {
+          if (att.type !== 'document') {
+            allowedAttachments.push(att);
+            continue;
+          }
+
+          const mime = att.mimeType ?? '';
+          const unsupportedMime = mime.length > 0 && !mime.startsWith('application/');
+          const unknownSize = typeof att.size !== 'number';
+          const oversize = typeof att.size === 'number' && att.size > waDocumentMaxBytes;
+
+          if (unknownSize) {
+            warnings.push('⚠️ Document skipped: unknown file size.');
+            childLog.warn(
+              { attachmentType: att.type, mimeType: att.mimeType },
+              'WhatsApp document rejected because size is missing',
+            );
+            continue;
+          }
+
+          if (unsupportedMime) {
+            warnings.push('⚠️ Document skipped: unsupported MIME type.');
+            childLog.warn({ attachmentType: att.type, mimeType: att.mimeType }, 'WhatsApp document rejected due to MIME type');
+            continue;
+          }
+          if (oversize) {
+            warnings.push('⚠️ Document skipped: file exceeds size limit.');
+            childLog.warn(
+              { size: att.size, waDocumentMaxBytes },
+              'WhatsApp document rejected due to configured size limit',
+            );
+            continue;
+          }
+
+          allowedAttachments.push(att);
+        }
+
+        if (warnings.length > 0) {
+          currentMessage = {
+            ...currentMessage,
+            attachments: allowedAttachments,
+            text: `${warnings.join('\n')}${currentMessage.text.trim() ? `\n${currentMessage.text}` : ''}`,
+          };
+        }
+      }
+
+      // Determine if user sent a voice message (before any mutation)
+      const isVoiceIn = message.attachments.some(
+        (a) => a.type === 'audio' && 'audioSubtype' in a && (a as FileAttachment).audioSubtype === 'voice',
+      );
 
       // Show typing indicator for Telegram
       if (message.platform.platform === 'telegram') {
@@ -287,14 +439,37 @@ async function bootstrap(): Promise<void> {
 
       let response: UnifiedResponse;
       try {
-        response = await agent.handleMessage(message, undefined, startHook, doneHook);
+        response = await agent.handleMessage(currentMessage, undefined, startHook, doneHook);
       } finally {
         if (reporter) await reporter.cleanup().catch(() => undefined);
       }
 
+      // TTS: auto-convert text response to voice for voice-in messages
+      const hasToolAudio = response.attachments?.some((a) => a.type === 'audio') ?? false;
+      if (isVoiceIn && !hasToolAudio && mediaService) {
+        try {
+          const synth = await mediaService.synthesizeSpeech(response.text);
+          const audioAtt: import('./types/message.js').FileAttachment = {
+            type: 'audio',
+            audioSubtype: 'voice',
+            fileId: '',
+            data: synth.data.toString('base64'),
+            mimeType: synth.mimeType,
+          };
+          response = {
+            ...response,
+            attachments: [...(response.attachments ?? []), audioAtt],
+            text: '',
+          };
+        } catch (err) {
+          childLog.warn({ err }, 'TTS synthesis failed — falling back to text reply');
+        }
+      }
+
       // Telegram-specific single-mode finalization gate:
       // if progress message edit to final response succeeds, skip adapter send to avoid duplicate.
-      if (message.platform.platform === 'telegram' && progressMode === 'single' && reporter) {
+      if (message.platform.platform === 'telegram' && progressMode === 'single' && reporter
+          && !response.attachments?.some((a) => a.type === 'audio')) {
         if (response.format === 'text' || response.format === 'markdown') {
           const finalized = await reporter.finalizeToResponse(response.text, response.format);
           if (finalized) return;

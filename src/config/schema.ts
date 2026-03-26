@@ -96,7 +96,8 @@ export const ConfigSchema = z.object({
   // ── Session ───────────────────────────────────────────────────────────────
   session: z.object({
     ttlSeconds: z.coerce.number().int().min(60).default(3600),
-    store: z.enum(['memory', 'redis']).default('memory'),
+    store: z.enum(['memory', 'redis', 'meridian']).default('memory'),
+    meridianUrl: z.string().url().optional(),
   }),
 
   // ── Redis ─────────────────────────────────────────────────────────────────
@@ -140,7 +141,37 @@ export const ConfigSchema = z.object({
       .optional(),
     /** Base URL of the Meridian MCP server. When set, activates MeridianAllowlistStore. */
     meridianMcpUrl: z.string().url().optional(),
+    /** Which allowlist store backend to use. Defaults to 'file'. Set to 'meridian' to use MeridianAllowlistStore (requires MERIDIAN_MCP_URL). */
+    allowlistStore: z.enum(['file', 'meridian']).default('file'),
   }),
+
+  // ── WhatsApp ──────────────────────────────────────────────────────────────
+  whatsapp: z.object({
+    ownerNumber: z.string().optional(),
+    sessionPath: z.string().default('.whatsapp-session'),
+    enabled: z.coerce.boolean().default(false),
+    documentMaxBytes: z.coerce.number().int().min(1024).max(50 * 1024 * 1024).default(10 * 1024 * 1024),
+  }).optional(),
+
+  // ── Website ───────────────────────────────────────────────────────────────
+  website: z.object({
+    ownerUsername: z.string().min(1),
+    ownerPassword: secretString,
+    port: z.coerce.number().int().min(1).max(65535).default(3000),
+    host: z.string().default('0.0.0.0'),
+    enabled: z.coerce.boolean().default(false),
+  }).optional(),
+
+  // ── Media ──────────────────────────────────────────────────────────────────
+  media: z.object({
+    imageModel: z.string().default('gpt-image-1'),
+    sttModel: z.string().default('whisper-1'),
+    ttsModel: z.string().default('tts-1'),
+    ttsVoice: z.enum(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']).default('alloy'),
+    ttsEnabled: z.coerce.boolean().default(true),
+    imageSize: z.string().default('1024x1024'),
+    imageQuality: z.enum(['standard', 'hd', 'low', 'medium', 'high', 'auto']).default('standard'),
+  }).optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

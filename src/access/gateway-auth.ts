@@ -150,9 +150,10 @@ export class GatewayAuth {
     return entry.token;
   }
 
-  /** Return true if userId matches the configured owner ID. */
+  /** Return true if userId matches any configured owner identity. */
   private isOwner(userId: string): boolean {
-    return userId === this.config.ownerUserId;
+    const ids = this.config.ownerUserIds ?? new Set([this.config.ownerUserId]);
+    return ids.has(userId);
   }
 
   /**

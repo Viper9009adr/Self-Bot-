@@ -1,7 +1,9 @@
 /**
  * src/session/store.ts
- * InMemorySessionStore and RedisSessionStore implementations.
+ * SessionStore implementations: InMemorySessionStore, RedisSessionStore,
+ * and the createSessionStore factory that also supports MeridianSessionStore.
  */
+import { MeridianSessionStore } from './meridian-store.js';
 import type { SessionStore, UserSession } from '../types/session.js';
 import { SessionError } from '../utils/errors.js';
 import { childLogger } from '../utils/logger.js';
@@ -193,10 +195,43 @@ export class RedisSessionStore implements SessionStore {
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
-export function createSessionStore(
-  type: 'memory' | 'redis',
-  options: { ttlSeconds?: number; redisUrl?: string } = {},
-): SessionStore {
+/**
+ * Instantiate and return a `SessionStore` for the given backend type.
+ *
+ * - `'memory'`   — `InMemorySessionStore`. No external dependencies. Data is
+ *                  lost on process restart. Default when `SESSION_STORE` is unset.
+ * - `'redis'`    — `RedisSessionStore`. Requires a running Redis instance.
+ *                  Pass `redisUrl` (defaults to `redis://localhost:6379`).
+ * - `'meridian'` — `MeridianSessionStore`. Persists sessions to a Meridian MCP
+ *                  server. Requires `meridianUrl` (`MERIDIAN_SESSION_URL` env var).
+ *                  Throws if `meridianUrl` is absent. Gracefully degrades to an
+ *                  in-memory-only mode if the Meridian server is unreachable at
+ *                  startup (logged as a warning rather than throwing).
+ *
+ * @param type    - Backend selector: `'memory'`, `'redis'`, or `'meridian'`.
+ * @param options - Backend-specific configuration.
+ * @param options.ttlSeconds   - Session TTL in seconds (default: 3600).
+ * @param options.redisUrl     - Redis connection string (redis type only).
+ * @param options.meridianUrl  - Meridian MCP server base URL (meridian type only).
+ * @returns A ready-to-use `SessionStore` instance.
+ * @throws {Error} When `type === 'meridian'` and `options.meridianUrl` is not provided.
+ */
+export async function createSessionStore(
+  type: 'memory' | 'redis' | 'meridian',
+  options: { ttlSeconds?: number; redisUrl?: string; meridianUrl?: string } = {},
+): Promise<SessionStore> {
+  if (type === 'meridian') {
+    const url = options.meridianUrl;
+    if (!url) {
+      throw new Error(
+        'createSessionStore: meridianUrl is required when SESSION_STORE=meridian. Set MERIDIAN_SESSION_URL env var.',
+      );
+    }
+    const store = new MeridianSessionStore(url, options.ttlSeconds);
+    await store.load();
+    return store;
+  }
+
   if (type === 'redis') {
     const url = options.redisUrl ?? 'redis://localhost:6379';
     return new RedisSessionStore(url, options.ttlSeconds);

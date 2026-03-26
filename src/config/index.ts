@@ -44,6 +44,7 @@ function buildRawConfig(): Record<string, unknown> {
     session: {
       ttlSeconds: process.env['SESSION_TTL_SECONDS'],
       store: process.env['SESSION_STORE'],
+      meridianUrl: process.env['MERIDIAN_SESSION_URL'],
     },
 
     redis: {
@@ -73,7 +74,43 @@ function buildRawConfig(): Record<string, unknown> {
       rejectionMessage: process.env['ACCESS_REJECTION_MESSAGE'],
       gatewayJwtSecret: process.env['GATEWAY_JWT_SECRET'],
       meridianMcpUrl:   process.env['MERIDIAN_MCP_URL'],
+      allowlistStore:   process.env['ALLOWLIST_STORE'],
     },
+
+    // Conditionally include whatsapp block only when at least one WA var is set
+    ...(process.env['WA_ENABLED'] || process.env['WA_OWNER_NUMBER'] ? {
+      whatsapp: {
+        ownerNumber: process.env['WA_OWNER_NUMBER'],
+        sessionPath: process.env['WA_SESSION_PATH'],
+        enabled: process.env['WA_ENABLED'],
+        documentMaxBytes: process.env['WA_DOCUMENT_MAX_BYTES'],
+      },
+    } : {}),
+
+    // Conditionally include website block only when at least one WEB var is set
+    ...(process.env['WEB_ENABLED'] || process.env['WEB_OWNER_USERNAME'] ? {
+      website: {
+        ownerUsername: process.env['WEB_OWNER_USERNAME'],
+        ownerPassword: process.env['WEB_OWNER_PASSWORD'],
+        port: process.env['WEB_PORT'],
+        host: process.env['WEB_HOST'],
+        enabled: process.env['WEB_ENABLED'],
+      },
+    } : {}),
+
+    // Conditionally include media block only when at least one MEDIA var is set
+    ...(process.env['MEDIA_IMAGE_MODEL'] || process.env['MEDIA_STT_MODEL'] ||
+        process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ? {
+      media: {
+        imageModel: process.env['MEDIA_IMAGE_MODEL'],
+        sttModel: process.env['MEDIA_STT_MODEL'],
+        ttsModel: process.env['MEDIA_TTS_MODEL'],
+        ttsVoice: process.env['MEDIA_TTS_VOICE'],
+        ttsEnabled: process.env['MEDIA_TTS_ENABLED'],
+        imageSize: process.env['MEDIA_IMAGE_SIZE'],
+        imageQuality: process.env['MEDIA_IMAGE_QUALITY'],
+      },
+    } : {}),
   };
 }
 
@@ -115,6 +152,18 @@ function validateProviderModel(config: Config): void {
 }
 
 /**
+ * Cross-field validation: if allowlistStore is 'meridian', meridianMcpUrl must be set.
+ * Runs after schema parse so config values are already typed and coerced.
+ */
+function validateAllowlistStore(config: Config): void {
+  if (config.access.allowlistStore === 'meridian' && !config.access.meridianMcpUrl) {
+    throw new Error(
+      'Configuration error: ALLOWLIST_STORE=meridian requires MERIDIAN_MCP_URL to be set.',
+    );
+  }
+}
+
+/**
  * Parse and validate environment configuration.
  * Throws a descriptive error if validation fails.
  */
@@ -135,6 +184,9 @@ export function loadConfig(): Config {
 
   // ── Cross-field validation: provider ↔ model sanity check ──────────────
   validateProviderModel(config);
+
+  // ── Cross-field validation: allowlistStore ↔ meridianMcpUrl ─────────────
+  validateAllowlistStore(config);
 
   _config = config;
   return _config;

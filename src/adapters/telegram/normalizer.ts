@@ -53,10 +53,21 @@ function extractAttachments(msg: Message): Attachment[] {
   if (msg.audio) {
     attachments.push({
       type: 'audio',
+      audioSubtype: 'audio' as const,
       fileId: msg.audio.file_id,
       fileName: msg.audio.file_name,
       mimeType: msg.audio.mime_type,
       size: msg.audio.file_size,
+    });
+  }
+
+  if (msg.voice) {
+    attachments.push({
+      type: 'audio',
+      audioSubtype: 'voice' as const,
+      fileId: msg.voice.file_id,
+      mimeType: 'audio/ogg',
+      ...(msg.voice.file_size !== undefined ? { size: msg.voice.file_size } : {}),
     });
   }
 
@@ -122,6 +133,7 @@ function buildAttachmentFallbackText(msg: Message): string {
     return emoji ? `[Sticker: ${emoji}]` : '[Sticker]';
   }
   if (msg.location) return `[Location: ${msg.location.latitude}, ${msg.location.longitude}]`;
+  if (msg.voice) return '[Voice message]';
   return '[Attachment]';
 }
 

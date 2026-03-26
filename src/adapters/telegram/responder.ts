@@ -2,7 +2,7 @@
  * src/adapters/telegram/responder.ts
  * Convert UnifiedResponse to Grammy API calls.
  */
-import type { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import type { UnifiedResponse, TelegramMetadata } from '../../types/message.js';
 import { childLogger } from '../../utils/logger.js';
 
@@ -62,27 +62,29 @@ export async function sendTelegramResponse(
   const chatId = meta.chatId;
   const parseMode = toParseMode(response.format);
 
-  const chunks = splitMessage(response.text);
+  if (response.text.trim()) {
+    const chunks = splitMessage(response.text);
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (!chunk) continue;
-    try {
-      await bot.api.sendMessage(chatId, chunk, {
-        // Only reply to original message for first chunk
-        ...(i === 0 && meta.messageId
-          ? { reply_parameters: { message_id: meta.messageId } }
-          : {}),
-        ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
-      });
-    } catch (err) {
-      // Fallback: retry without parse_mode if Markdown/HTML parsing fails
-      if (parseMode && err instanceof Error && err.message.includes('parse')) {
-        log.warn({ chatId, err: err.message }, 'Retrying without parse_mode');
-        await bot.api.sendMessage(chatId, chunk);
-      } else {
-        log.error({ chatId, err }, 'Failed to send Telegram message');
-        throw err;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      if (!chunk) continue;
+      try {
+        await bot.api.sendMessage(chatId, chunk, {
+          // Only reply to original message for first chunk
+          ...(i === 0 && meta.messageId
+            ? { reply_parameters: { message_id: meta.messageId } }
+            : {}),
+          ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
+        });
+      } catch (err) {
+        // Fallback: retry without parse_mode if Markdown/HTML parsing fails
+        if (parseMode && err instanceof Error && err.message.includes('parse')) {
+          log.warn({ chatId, err: err.message }, 'Retrying without parse_mode');
+          await bot.api.sendMessage(chatId, chunk);
+        } else {
+          log.error({ chatId, err }, 'Failed to send Telegram message');
+          throw err;
+        }
       }
     }
   }
@@ -91,9 +93,15 @@ export async function sendTelegramResponse(
   if (response.attachments && response.attachments.length > 0) {
     for (const attachment of response.attachments) {
       try {
-        if (attachment.type === 'image' && 'fileId' in attachment) {
+        if (attachment.type === 'audio' && 'data' in attachment && attachment.data) {
+          const buf = Buffer.from(attachment.data, 'base64');
+          await bot.api.sendVoice(chatId, new InputFile(buf, 'voice.ogg'));
+        } else if (attachment.type === 'image' && 'data' in attachment && attachment.data) {
+          const buf = Buffer.from(attachment.data, 'base64');
+          await bot.api.sendPhoto(chatId, new InputFile(buf, 'image.png'));
+        } else if (attachment.type === 'image' && 'fileId' in attachment && attachment.fileId) {
           await bot.api.sendPhoto(chatId, attachment.fileId);
-        } else if (attachment.type === 'document' && 'fileId' in attachment) {
+        } else if (attachment.type === 'document' && 'fileId' in attachment && attachment.fileId) {
           await bot.api.sendDocument(chatId, attachment.fileId);
         }
       } catch (err) {

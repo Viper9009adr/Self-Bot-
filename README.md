@@ -27,7 +27,7 @@ Self-BOT is a self-hosted personal AI assistant that runs on Telegram, WhatsApp,
 - **Node.js 18+** (required for Playwright browser automation)
 - A **Telegram bot token** — create one with [@BotFather](https://t.me/BotFather)
 - Your **Telegram user ID** (numeric) — use [@userinfobot](https://t.me/userinfobot)
-- An **API key** for at least one LLM provider (or a free GitHub account for GitHub Models)
+- An **API key** or **Subscription** for at least one LLM provider 
 
 ## Quick Start
 

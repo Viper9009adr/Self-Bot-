@@ -1,7 +1,7 @@
 /**
  * src/access/meridian-store.ts
  * MCP-backed allowlist store that persists grants/revocations to a Meridian
- * MCP server using the Meridian DSL v0.1 wire format.
+ * MCP server using store_context / fetch_context.
  *
  * FALLBACK CONTRACT:
  *   Every method that calls MCPClient.callTool() MUST inspect result.success.
@@ -32,7 +32,7 @@ const MERIDIAN_CTX: ToolContext = {
 
 /**
  * MCP-backed implementation of IAllowlistStore.
- * Stores allowlist state in a Meridian MCP server tool ("meridian_allowlist").
+ * Stores allowlist state in a Meridian MCP server via store_context/fetch_context (task: self-bot-allowlist, agent: AUTH).
  * Falls back to an in-memory snapshot populated at load() time if MCP calls fail.
  */
 export class MeridianAllowlistStore implements IAllowlistStore {
@@ -79,53 +79,38 @@ export class MeridianAllowlistStore implements IAllowlistStore {
    */
   async grant(userId: string, grantedBy: string): Promise<void> {
     const now = new Date().toISOString();
-    const dsl =
-      `§F:AUTH|T:GW|I:${userId}|P:1|S:C\n` +
-      `¶action:grant¶\n` +
-      `¶granted_by:${grantedBy}¶\n` +
-      `¶granted_at:${now}¶\n` +
-      `§`;
-
-    // CRITICAL: inspect result.success — callTool never throws
-    const result = await this.client.callTool('meridian_allowlist', { payload: dsl }, MERIDIAN_CTX);
-    if (!result.success) {
-      log.error(
-        { userId, grantedBy, error: result.error },
-        'MeridianAllowlistStore.grant: MCP call failed — updating local snapshot only',
-      );
-    }
-
-    // Optimistic local state — update snapshot regardless of MCP result
+    // Update snapshot first (optimistic local state)
     this.snapshot.set(userId, { userId, grantedAt: now, grantedBy });
+    // Persist full allowlist to Meridian
+    const sessionId = await this._persist(Array.from(this.snapshot.values()));
+    if (sessionId === null) {
+      log.error(
+        { userId, grantedBy },
+        'MeridianAllowlistStore.grant: persist failed — local snapshot updated only',
+      );
+    } else {
+      log.info({ userId, grantedBy, sessionId }, 'MeridianAllowlistStore: granted access');
+    }
   }
 
   /**
    * Revoke access for userId. Persists to Meridian MCP, then removes from snapshot.
    *
-   * NOTE: S:C always (S:X is undefined in Meridian DSL grammar).
-   * ¶action:revoke¶ is the semantic discriminator for revocation intent.
-   *
    * CRITICAL: Inspect result.success after callTool(). MCPClient.callTool never throws.
    */
   async revoke(userId: string): Promise<void> {
-    const now = new Date().toISOString();
-    const dsl =
-      `§F:AUTH|T:GW|I:${userId}|P:1|S:C\n` +
-      `¶action:revoke¶\n` +
-      `¶revoked_at:${now}¶\n` +
-      `§`;
-
-    // CRITICAL: inspect result.success — callTool never throws
-    const result = await this.client.callTool('meridian_allowlist', { payload: dsl }, MERIDIAN_CTX);
-    if (!result.success) {
-      log.error(
-        { userId, error: result.error },
-        'MeridianAllowlistStore.revoke: MCP call failed — removing from local snapshot only',
-      );
-    }
-
-    // Optimistic local state — remove from snapshot regardless of MCP result
+    // Update snapshot first (optimistic local state)
     this.snapshot.delete(userId);
+    // Persist full allowlist to Meridian
+    const sessionId = await this._persist(Array.from(this.snapshot.values()));
+    if (sessionId === null) {
+      log.error(
+        { userId },
+        'MeridianAllowlistStore.revoke: persist failed — local snapshot updated only',
+      );
+    } else {
+      log.info({ userId, sessionId }, 'MeridianAllowlistStore: revoked access');
+    }
   }
 
   /**
@@ -143,47 +128,109 @@ export class MeridianAllowlistStore implements IAllowlistStore {
   }
 
   /**
-   * Fetch all allowlist entries from Meridian and repopulate the in-memory snapshot.
+   * Persist the current allowlist to Meridian via store_context.
    *
-   * CRITICAL: Inspect result.success after callTool(). MCPClient.callTool never throws.
-   * If false: log.error and return — snapshot stays at current state.
+   * NOTE: store_context is append-only — every call creates a new session.
+   * mode='latest' on fetch always reads the most recently stored snapshot.
+   * Session growth is unbounded but operationally acceptable for a personal bot.
    *
-   * Expected result.data shape on success:
-   *   { entries: Array<{ userId: string; grantedAt: string; grantedBy: string; note?: string }> }
+   * @returns session_id of the stored session, or null on MCP failure.
+   */
+  private async _persist(entries: AllowlistEntry[], dependsOn?: string): Promise<string | null> {
+    const result = await this.client.callTool(
+      'store_context',
+      {
+        task_id: 'self-bot-allowlist',
+        agent: 'AUTH',
+        content: JSON.stringify({ entries }),
+        format: 'json',
+        ...(dependsOn ? { depends_on: [dependsOn] } : {}),
+      },
+      MERIDIAN_CTX,
+    );
+
+    if (!result.success) {
+      log.error({ error: result.error }, '_persist: store_context failed');
+      return null;
+    }
+
+    // store_context returns { session_id, byte_size, ratio, session_seq } with no `success` field.
+    // MCPClient wraps it as { success: true, data: { session_id, ... } }.
+    const sessionId = (result.data as { session_id?: string })?.session_id ?? null;
+    log.debug({ sessionId }, '_persist: stored successfully');
+    return sessionId;
+  }
+
+  /**
+   * Fetch the latest allowlist snapshot from Meridian and repopulate the in-memory snapshot.
+   *
+   * Uses fetch_context with mode='latest' to retrieve the most recently stored allowlist.
+   * An empty result (no prior sessions) is treated as an empty allowlist, not an error.
+   *
+   * NOTE: FastMCP serializes each list element as a separate MCP content[] entry.
+   * MCPClient reads only content[0].text — result.data is therefore the FIRST session
+   * object (a plain dict), not an array. For mode='latest', this is the only session.
+   * Empty result: FastMCP returns empty content[] → MCPClient wraps as { content: '[]' }.
+   *
+   * NOTE: _fetchAll is called only once, at startup via load(). The snapshot is guaranteed
+   * empty at that point. Do not expose as a public refresh method without adding snapshot.clear()
+   * before the empty-result early return.
    */
   private async _fetchAll(): Promise<void> {
-    const dsl =
-      `§F:AUTH|T:GW|I:system|P:1|S:C\n` +
-      `¶action:list¶\n` +
-      `§`;
+    const result = await this.client.callTool(
+      'fetch_context',
+      {
+        task_id: 'self-bot-allowlist',
+        agent: 'AUTH',
+        mode: 'latest',
+      },
+      MERIDIAN_CTX,
+    );
 
-    // CRITICAL: inspect result.success — callTool never throws
-    const result = await this.client.callTool('meridian_allowlist', { payload: dsl }, MERIDIAN_CTX);
     if (!result.success) {
       log.error(
         { error: result.error },
-        'MeridianAllowlistStore._fetchAll: MCP call failed — snapshot will be empty',
+        'MeridianAllowlistStore._fetchAll: fetch_context failed — snapshot will be empty',
       );
       return;
     }
 
-    // Parse entries from result.data
-    const data = result.data as { entries?: AllowlistEntry[] } | null;
-    if (!data || !Array.isArray(data.entries)) {
+    // FastMCP serializes each list item as a separate MCP content[] entry.
+    // MCPClient reads only content[0].text → result.data is the first session object (not an array).
+    // For mode='latest', this is the only session we need.
+    const sessionData = result.data as { content?: string } | null;
+
+    // No prior sessions: empty content[] path or missing content field
+    if (!sessionData || typeof sessionData.content !== 'string' || sessionData.content === '[]') {
+      log.info('MeridianAllowlistStore._fetchAll: no prior sessions — starting with empty allowlist');
+      return;
+    }
+
+    let parsed: { entries?: AllowlistEntry[] };
+    try {
+      parsed = JSON.parse(sessionData.content) as { entries?: AllowlistEntry[] };
+    } catch {
       log.warn(
-        { data },
-        'MeridianAllowlistStore._fetchAll: unexpected data shape — snapshot will be empty',
+        { raw: sessionData.content },
+        'MeridianAllowlistStore._fetchAll: content parse failed — snapshot will be empty',
+      );
+      return;
+    }
+
+    if (!parsed.entries || !Array.isArray(parsed.entries)) {
+      log.warn(
+        { parsed },
+        'MeridianAllowlistStore._fetchAll: unexpected entries shape — snapshot will be empty',
       );
       return;
     }
 
     this.snapshot.clear();
-    for (const entry of data.entries) {
+    for (const entry of parsed.entries) {
       if (entry.userId) {
         this.snapshot.set(entry.userId, entry);
       }
     }
-
     log.info({ count: this.snapshot.size }, 'MeridianAllowlistStore: snapshot loaded');
   }
 }

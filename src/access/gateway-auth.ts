@@ -262,6 +262,7 @@ export class GatewayAuth {
         // ONLY place store.grant() is called — not in issueJWT
         await this.store.grant(arg, this.config.ownerUserId);
         await sendResponse(makeGuardResponse(message, `✅ Granted access to ${arg}`));
+        log.info({ userId: arg, grantedBy: this.config.ownerUserId }, 'GatewayAuth: access granted via /grant');
         return true;
       }
 
@@ -281,6 +282,7 @@ export class GatewayAuth {
 
       case 'listusers': {
         const entries = await this.store.list();
+        log.info({ count: entries.length }, 'GatewayAuth: /listusers command');
         if (entries.length === 0) {
           await sendResponse(makeGuardResponse(message, 'No users granted.'));
         } else {

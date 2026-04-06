@@ -24,12 +24,18 @@ import { RegisterAccountTool } from './mcp/tools/register-account.js';
 import { BookAppointmentTool } from './mcp/tools/book-appointment.js';
 import { RemoteMCPLoader } from './mcp/remote-loader.js';
 import { createMediaService } from './media/index.js';
+import {
+  appendCapabilityNotice,
+  isMediaCapabilityUnavailableError,
+  prependCapabilityNotice,
+} from './media/index.js';
 import { fetchTelegramFile } from './adapters/telegram/file-fetcher.js';
 import { waUserId } from './adapters/whatsapp/normalizer.js';
 import { GenerateImageTool } from './mcp/tools/generate-image.js';
 import { EditImageTool } from './mcp/tools/edit-image.js';
 import { TranscribeAudioTool } from './mcp/tools/transcribe-audio.js';
 import { SynthesizeSpeechTool } from './mcp/tools/synthesize-speech.js';
+import { ReadPDFTool } from './mcp/tools/read-pdf.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
 import type { FileAttachment } from './types/message.js';
@@ -73,7 +79,7 @@ class ShutdownManager {
 
 const log = getLogger();
 const shutdown = new ShutdownManager();
-
+const WA_AUDIO_FALLBACK_TEXT = '🎤 Voice reply is ready, but WhatsApp audio delivery is not yet supported in this build.';
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 async function bootstrap(): Promise<void> {
   log.info('Self-BOT starting up...');
@@ -95,7 +101,7 @@ async function bootstrap(): Promise<void> {
   if (mediaService) {
     log.info('MediaService initialized');
   } else {
-    log.info('MediaService unavailable (no OPENAI_API_KEY)');
+    log.info('MediaService unavailable — set LOCAL_IMAGE_URL/LOCAL_STT_URL/LOCAL_TTS_URL or OPENAI_API_KEY (plus MEDIA_TTS_ENABLED=true for TTS fallback)');
   }
 
   // ── 1b. OAuth bootstrap (claude-oauth provider) ───────────────────────────
@@ -161,6 +167,7 @@ async function bootstrap(): Promise<void> {
     new EditImageTool(mediaService),
     new TranscribeAudioTool(mediaService),
     new SynthesizeSpeechTool(mediaService),
+    new ReadPDFTool(mediaService),
   ]);
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
 
@@ -311,11 +318,22 @@ async function bootstrap(): Promise<void> {
       }
 
       // STT: fetch and transcribe Telegram audio attachments
-      if (message.platform.platform === 'telegram' && mediaService) {
+      if (message.platform.platform === 'telegram') {
         const tgApiForAudio = telegramAdapter.getApi();
         const tgTokenForAudio = config.telegram.botToken as unknown as string;
+        let warnedUnavailable = false;
         for (const att of currentMessage.attachments) {
           if (att.type === 'audio' && 'fileId' in att && (att as FileAttachment).fileId && !((att as FileAttachment).data)) {
+            if (!mediaService) {
+              if (!warnedUnavailable) {
+                currentMessage = {
+                  ...currentMessage,
+                  text: prependCapabilityNotice(currentMessage.text, 'stt'),
+                };
+                warnedUnavailable = true;
+              }
+              continue;
+            }
             try {
               const fetched = await fetchTelegramFile(tgApiForAudio!, tgTokenForAudio, (att as FileAttachment).fileId);
               (att as FileAttachment).data = fetched.data.toString('base64');
@@ -332,6 +350,16 @@ async function bootstrap(): Promise<void> {
                   : transcriptPrefix,
               };
             } catch (err) {
+              if (isMediaCapabilityUnavailableError(err)) {
+                if (!warnedUnavailable) {
+                  currentMessage = {
+                    ...currentMessage,
+                    text: prependCapabilityNotice(currentMessage.text, 'stt'),
+                  };
+                  warnedUnavailable = true;
+                }
+                continue;
+              }
               childLog.warn({ err }, 'Failed to fetch/transcribe Telegram audio attachment');
             }
           }
@@ -446,30 +474,57 @@ async function bootstrap(): Promise<void> {
 
       // TTS: auto-convert text response to voice for voice-in messages
       const hasToolAudio = response.attachments?.some((a) => a.type === 'audio') ?? false;
-      if (isVoiceIn && !hasToolAudio && mediaService) {
-        try {
-          const synth = await mediaService.synthesizeSpeech(response.text);
-          const audioAtt: import('./types/message.js').FileAttachment = {
-            type: 'audio',
-            audioSubtype: 'voice',
-            fileId: '',
-            data: synth.data.toString('base64'),
-            mimeType: synth.mimeType,
-          };
+      if (isVoiceIn && !hasToolAudio) {
+        if (!mediaService) {
           response = {
             ...response,
-            attachments: [...(response.attachments ?? []), audioAtt],
-            text: '',
+            text: appendCapabilityNotice(response.text, 'tts'),
           };
-        } catch (err) {
-          childLog.warn({ err }, 'TTS synthesis failed — falling back to text reply');
+        } else {
+          try {
+            const synth = await mediaService.synthesizeSpeech(response.text);
+            const audioAtt: import('./types/message.js').FileAttachment = {
+              type: 'audio',
+              audioSubtype: 'voice',
+              fileId: '',
+              data: synth.data.toString('base64'),
+              mimeType: synth.mimeType,
+            };
+            response = {
+              ...response,
+              attachments: [...(response.attachments ?? []), audioAtt],
+              text:
+                message.platform.platform === 'whatsapp'
+                  ? (response.text.trim() || WA_AUDIO_FALLBACK_TEXT)
+                  : '',
+            };
+          } catch (err) {
+            if (isMediaCapabilityUnavailableError(err)) {
+              response = {
+                ...response,
+                text: appendCapabilityNotice(response.text, 'tts'),
+              };
+            } else {
+              childLog.warn({ err }, 'TTS synthesis failed — falling back to text reply');
+            }
+          }
         }
+      }
+
+      if (
+        message.platform.platform === 'whatsapp'
+        && (response.attachments?.some((a) => a.type === 'audio') ?? false)
+      ) {
+        response = {
+          ...response,
+          text: response.text.trim() || WA_AUDIO_FALLBACK_TEXT,
+        };
       }
 
       // Telegram-specific single-mode finalization gate:
       // if progress message edit to final response succeeds, skip adapter send to avoid duplicate.
       if (message.platform.platform === 'telegram' && progressMode === 'single' && reporter
-          && !response.attachments?.some((a) => a.type === 'audio')) {
+          && !response.attachments?.some((a) => a.type === 'audio' || a.type === 'image')) {
         if (response.format === 'text' || response.format === 'markdown') {
           const finalized = await reporter.finalizeToResponse(response.text, response.format);
           if (finalized) return;

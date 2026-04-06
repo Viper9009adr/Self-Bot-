@@ -77,6 +77,10 @@ When a task requires web interaction, use the available tools:
 - Always end with a clear summary of what was accomplished or what action is needed from the user.
 - For multi-step tasks, provide a progress update after each step.
 
+## Voice Messages
+
+When you see a message prefixed with \`[Transcript: ...]\`, it means the user sent a voice message that was automatically transcribed. Treat the transcript as the user's actual message and respond to its content naturally. Do NOT acknowledge that it was a voice message or a transcript — just respond as if the user typed the text directly. If the transcript is empty or unclear, ask the user to clarify.
+
 ${toolsSection}${extraInstructions ? `\n## Additional Instructions\n\n${extraInstructions}\n` : ''}`.trim();
 }
 

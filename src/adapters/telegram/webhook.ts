@@ -106,9 +106,13 @@ export function createTelegramBot(config: Config): TelegramBotSetup {
     // ── Long-polling mode ──────────────────────────────────────────────────
     const startListening = async (): Promise<void> => {
       if (isListening) return;
+      // NOTE: drop_pending_updates is intentionally absent.
+      // Grammy will replay queued updates (up to Telegram's 24h window) on startup.
+      // Owner commands (/grant, /revoke, /listusers) are consumed by GatewayAuth
+      // before rawHandler runs — they are NOT stale-filtered and will be applied
+      // even if queued from a previous session. This is correct behavior.
+      // Stale chat messages are dropped by the 30s cutoff filter in rawHandler.
       bot.start({
-        // Avoid replaying stale queued messages from downtime/restarts.
-        drop_pending_updates: true,
         onStart: (botInfo) => {
           log.info({ username: botInfo.username }, 'Bot started polling');
           isListening = true;

@@ -9,6 +9,7 @@ import { childLogger } from '../../utils/logger.js';
 const log = childLogger({ module: 'whatsapp:responder' });
 
 const MAX_MESSAGE_LENGTH = 4096;
+const WA_AUDIO_FALLBACK_TEXT = '🎤 Voice reply is ready, but WhatsApp audio delivery is not yet supported in this build.';
 
 function splitMessage(text: string, maxLen = MAX_MESSAGE_LENGTH): string[] {
   if (text.length <= maxLen) return [text];
@@ -33,6 +34,22 @@ export async function sendWAResponse(client: Client, response: UnifiedResponse):
 
   const meta = response.platform as WhatsAppMetadata;
   const chatId = meta.chatId;
+
+  const audioAttachments = response.attachments?.filter((att) => att.type === 'audio') ?? [];
+  if (audioAttachments.length > 0) {
+    log.warn(
+      { chatId, attachmentCount: audioAttachments.length },
+      'WhatsApp audio delivery is not yet implemented; audio attachment dropped',
+    );
+
+    try {
+      await client.sendMessage(chatId, WA_AUDIO_FALLBACK_TEXT);
+    } catch (err) {
+      log.error({ chatId, err }, 'Failed to send WhatsApp audio fallback message');
+      throw err;
+    }
+  }
+
   const chunks = splitMessage(response.text);
 
   for (const chunk of chunks) {

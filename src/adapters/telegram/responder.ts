@@ -95,7 +95,13 @@ export async function sendTelegramResponse(
       try {
         if (attachment.type === 'audio' && 'data' in attachment && attachment.data) {
           const buf = Buffer.from(attachment.data, 'base64');
-          await bot.api.sendVoice(chatId, new InputFile(buf, 'voice.ogg'));
+          const mime = attachment.mimeType ?? 'audio/ogg';
+          if (mime === 'audio/ogg') {
+            await bot.api.sendVoice(chatId, new InputFile(buf, 'voice.ogg'));
+          } else {
+            const ext = mime === 'audio/mpeg' ? 'mp3' : (mime === 'audio/wav' ? 'wav' : 'audio');
+            await bot.api.sendAudio(chatId, new InputFile(buf, `audio.${ext}`));
+          }
         } else if (attachment.type === 'image' && 'data' in attachment && attachment.data) {
           const buf = Buffer.from(attachment.data, 'base64');
           await bot.api.sendPhoto(chatId, new InputFile(buf, 'image.png'));

@@ -93,6 +93,7 @@ test-oauth.ts
 
 # Development-only scripts and tools
 Meridian/
+.docker/
 
 # Web frontend
 web/dist/

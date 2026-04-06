@@ -35,6 +35,8 @@ const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
   groq: 'llama-3.3-70b-versatile',
   'github-models': 'gpt-4o',
   openrouter: 'meta-llama/llama-3.1-8b-instruct:free',
+  'nvidia-nim': 'meta/llama-3.1-8b-instruct',
+  local: 'llama3',
 };
 
 export const ConfigSchema = z.object({
@@ -60,7 +62,7 @@ export const ConfigSchema = z.object({
   // ── LLM ───────────────────────────────────────────────────────────────────
   llm: z.object({
     provider: z
-      .enum(['openai', 'anthropic', 'groq', 'github-models', 'openrouter', 'claude-oauth'])
+      .enum(['openai', 'anthropic', 'groq', 'github-models', 'openrouter', 'claude-oauth', 'nvidia-nim', 'local'])
       .default('openai'),
     model: z.string().min(1).optional(),
     openaiApiKey: secretString.optional(),
@@ -70,9 +72,18 @@ export const ConfigSchema = z.object({
     githubToken: secretString.optional(),
     openrouterApiKey: secretString.optional(),
     openrouterReferer: z.string().url().optional(),
+    nvidiaNimApiKey: secretString.optional(),
     // ── Anthropic PKCE OAuth ──────────────────────────────────────────────
     /** Path to token cache file (default: .oauth-tokens.json) */
     oauthTokensPath: z.string().default('.oauth-tokens.json'),
+    // ── Local OpenAI-compatible server endpoints ───────────────────────────
+    // LOCAL_BASE_URL is primary (e.g. http://localhost:11434/v1)
+    // Optional per-capability overrides can point to different local services.
+    localBaseUrl: z.string().url().optional(),
+    localApiKey: secretString.optional(),
+    localSttUrl: z.string().url().optional(),
+    localTtsUrl: z.string().url().optional(),
+    localImageUrl: z.string().url().optional(),
   }).transform((llm) => ({
     ...llm,
     // If model is not explicitly set, pick a sensible default for the provider.
@@ -171,6 +182,7 @@ export const ConfigSchema = z.object({
     ttsEnabled: z.coerce.boolean().default(true),
     imageSize: z.string().default('1024x1024'),
     imageQuality: z.enum(['standard', 'hd', 'low', 'medium', 'high', 'auto']).default('standard'),
+    nvidiaNimImageModel: z.string().default('stabilityai/stable-diffusion-3-medium'),
   }).optional(),
 });
 

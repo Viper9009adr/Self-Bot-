@@ -28,6 +28,16 @@ export interface ImageGenOptions {
   quality?: string;
   style?: string;
   n?: number;
+  /** @nim-only NVIDIA NIM: Guidance scale (1-20, default 5) */
+  cfg_scale?: number;
+  /** @nim-only NVIDIA NIM: Aspect ratio (e.g. "16:9", "1:1", "9:16") */
+  aspect_ratio?: string;
+  /** @nim-only NVIDIA NIM: Random seed (0 = random) */
+  seed?: number;
+  /** @nim-only NVIDIA NIM: Number of denoising steps (default 50) */
+  steps?: number;
+  /** @nim-only NVIDIA NIM: Negative prompt to avoid */
+  negative_prompt?: string;
 }
 
 export interface ImageEditOptions {

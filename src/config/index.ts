@@ -4,9 +4,12 @@
  */
 import { config as loadDotenv } from 'dotenv';
 import { ConfigSchema, type Config } from './schema.js';
+import { getLogger } from '../utils/logger.js';
 
 // Load .env file (no-op if already set or file missing)
 loadDotenv();
+
+const log = getLogger().child({ module: 'config' });
 
 function buildRawConfig(): Record<string, unknown> {
   return {
@@ -31,7 +34,13 @@ function buildRawConfig(): Record<string, unknown> {
       githubToken: process.env['GITHUB_TOKEN'],
       openrouterApiKey: process.env['OPENROUTER_API_KEY'],
       openrouterReferer: process.env['OPENROUTER_REFERER'],
+      nvidiaNimApiKey: process.env['NVIDIA_NIM_API_KEY'],
       oauthTokensPath: process.env['ANTHROPIC_OAUTH_TOKENS_PATH'],
+      localBaseUrl: process.env['LOCAL_BASE_URL'],
+      localApiKey: process.env['LOCAL_API_KEY'],
+      localSttUrl: process.env['LOCAL_STT_URL'],
+      localTtsUrl: process.env['LOCAL_TTS_URL'],
+      localImageUrl: process.env['LOCAL_IMAGE_URL'],
     },
 
     agent: {
@@ -100,7 +109,8 @@ function buildRawConfig(): Record<string, unknown> {
 
     // Conditionally include media block only when at least one MEDIA var is set
     ...(process.env['MEDIA_IMAGE_MODEL'] || process.env['MEDIA_STT_MODEL'] ||
-        process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ? {
+        process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ||
+        process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'] ? {
       media: {
         imageModel: process.env['MEDIA_IMAGE_MODEL'],
         sttModel: process.env['MEDIA_STT_MODEL'],
@@ -109,6 +119,7 @@ function buildRawConfig(): Record<string, unknown> {
         ttsEnabled: process.env['MEDIA_TTS_ENABLED'],
         imageSize: process.env['MEDIA_IMAGE_SIZE'],
         imageQuality: process.env['MEDIA_IMAGE_QUALITY'],
+        nvidiaNimImageModel: process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'],
       },
     } : {}),
   };
@@ -164,6 +175,24 @@ function validateAllowlistStore(config: Config): void {
 }
 
 /**
+ * For local OpenAI-compatible backends, /v1 base is recommended for compatibility.
+ * Warn only (no hard fail) to preserve flexible proxy setups.
+ */
+function validateLocalBaseUrl(config: Config): void {
+  if (config.llm.provider !== 'local') return;
+  const base = config.llm.localBaseUrl;
+  if (!base) {
+    throw new Error('Configuration error: LOCAL_BASE_URL is required when LLM_PROVIDER=local.');
+  }
+  if (!base.replace(/\/+$/, '').endsWith('/v1')) {
+    log.warn(
+      { localBaseUrl: base },
+      'LOCAL_BASE_URL does not end with /v1; some OpenAI-compatible servers require /v1',
+    );
+  }
+}
+
+/**
  * Parse and validate environment configuration.
  * Throws a descriptive error if validation fails.
  */
@@ -187,6 +216,9 @@ export function loadConfig(): Config {
 
   // ── Cross-field validation: allowlistStore ↔ meridianMcpUrl ─────────────
   validateAllowlistStore(config);
+
+  // ── Cross-field validation: local provider URL sanity checks ─────────────
+  validateLocalBaseUrl(config);
 
   _config = config;
   return _config;

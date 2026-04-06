@@ -7,6 +7,11 @@ import { BaseTool } from './base.js';
 import type { IMediaService } from '../../media/index.js';
 import type { ToolResult, ToolContext } from '../../types/tool.js';
 import { ToolErrorCode } from '../../types/tool.js';
+import {
+  MEDIA_CAPABILITY_UNAVAILABLE_CODE,
+  createMediaCapabilityUnavailableError,
+  isMediaCapabilityUnavailableError,
+} from '../../media/index.js';
 
 const inputSchema = z.object({
   text: z.string().min(1).describe('Text to synthesize into speech'),
@@ -25,15 +30,38 @@ export class SynthesizeSpeechTool extends BaseTool<Input> {
 
   protected async run(input: Input, context: ToolContext): Promise<ToolResult> {
     if (!this.mediaService) {
-      return { success: false, data: null, error: 'Speech synthesis not configured (no OpenAI API key)', errorCode: ToolErrorCode.WORKER_UNAVAILABLE, durationMs: 0 };
+      const err = createMediaCapabilityUnavailableError('tts');
+      return {
+        success: false,
+        data: null,
+        error: err.message,
+        errorCode: ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE,
+        durationMs: 0,
+      };
     }
-    const audio = await this.mediaService.synthesizeSpeech(input.text, {
-      ...(input.voice ? { voice: input.voice } : {}),
-      ...(input.speed ? { speed: input.speed } : {}),
-    });
-    if (context.onAudioGenerated) {
-      context.onAudioGenerated(audio.data.toString('base64'), audio.mimeType);
+    try {
+      const audio = await this.mediaService.synthesizeSpeech(input.text, {
+        ...(input.voice ? { voice: input.voice } : {}),
+        ...(input.speed ? { speed: input.speed } : {}),
+      });
+      if (context.onAudioGenerated) {
+        context.onAudioGenerated(audio.data.toString('base64'), audio.mimeType);
+      }
+      return { success: true, data: { synthesized: true, mimeType: audio.mimeType }, durationMs: 0 };
+    } catch (err) {
+      if (isMediaCapabilityUnavailableError(err) || (
+        typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === MEDIA_CAPABILITY_UNAVAILABLE_CODE
+      )) {
+        const unavailable = createMediaCapabilityUnavailableError('tts');
+        return {
+          success: false,
+          data: null,
+          error: unavailable.message,
+          errorCode: ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE,
+          durationMs: 0,
+        };
+      }
+      throw err;
     }
-    return { success: true, data: { synthesized: true, mimeType: audio.mimeType }, durationMs: 0 };
   }
 }

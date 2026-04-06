@@ -68,6 +68,9 @@ export class MCPClient {
   private transport: StreamableHTTPClientTransport | SSEClientTransport | null = null;
   private connected = false;
   private readonly options: MCPClientOptions;
+  /** Reconnection configuration */
+  private readonly maxRetries = 1;
+  private readonly baseDelayMs = 100;
 
   constructor(options: MCPClientOptions) {
     this.options = options;
@@ -109,24 +112,63 @@ export class MCPClient {
   }
 
   /**
+   * Attempt to reconnect to the MCP server.
+   * Uses exponential backoff with a single retry.
+   */
+  private async _reconnect(): Promise<boolean> {
+    const delay = this.baseDelayMs * Math.pow(2, 0); // exponential backoff, single retry
+    log.info({ delay }, 'MCP client attempting reconnection');
+
+    // Small delay before retry
+    await new Promise((resolve) => setTimeout(resolve, delay));
+
+    try {
+      await this.disconnect();
+      await this.connect();
+      return true;
+    } catch (err) {
+      log.warn({ err }, 'MCP client reconnection failed');
+      this.connected = false;
+      return false;
+    }
+  }
+
+  /**
    * Call a remote MCP tool.
+   * Includes reconnection logic: if not connected, attempts to reconnect once before failing.
    */
   async callTool(
     toolName: string,
     input: JsonObject,
     _context: ToolContext,
   ): Promise<ToolResult> {
-    if (!this.client || !this.connected) {
+    // Check if connected - if not, attempt reconnection once
+    if (!this.connected || !this.client) {
+      log.debug({ toolName }, 'MCP client not connected, attempting reconnection');
+      const reconnected = await this._reconnect();
+      if (!reconnected) {
+        return {
+          success: false,
+          data: null,
+          error: 'MCP client not connected',
+          errorCode: ToolErrorCode.WORKER_UNAVAILABLE,
+        };
+      }
+    }
+
+    // After reconnection or if already connected, client should be initialized
+    const client = this.client;
+    if (!client) {
       return {
         success: false,
         data: null,
-        error: 'MCP client not connected',
+        error: 'MCP client not initialized',
         errorCode: ToolErrorCode.WORKER_UNAVAILABLE,
       };
     }
 
     try {
-      const response = await this.client.callTool({
+      const response = await client.callTool({
         name: toolName,
         arguments: input as Record<string, unknown>,
       });
@@ -167,12 +209,80 @@ export class MCPClient {
         errorCode: responseAny.isError ? ToolErrorCode.UNKNOWN : undefined,
       };
     } catch (err) {
-      log.error({ err, toolName }, 'MCP tool call failed');
+      // Mark as disconnected on connection error during tool call
+      log.error({ err, toolName }, 'MCP tool call failed, marking as disconnected');
+      this.connected = false;
+
+      // Check if it's a connection error - attempt reconnection once
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const isConnectionError =
+        errorMessage.includes('ECONNREFUSED') ||
+        errorMessage.includes('connect') ||
+        errorMessage.includes('network') ||
+        errorMessage.includes('socket');
+
+      if (isConnectionError) {
+        log.debug({ toolName }, 'Connection error during tool call, attempting reconnection');
+        const reconnected = await this._reconnect();
+        if (reconnected) {
+          // Retry the tool call once after successful reconnection
+          const retryClient = this.client;
+          if (!retryClient) {
+            return {
+              success: false,
+              data: null,
+              error: 'MCP client not initialized after reconnection',
+              errorCode: ToolErrorCode.WORKER_UNAVAILABLE,
+            };
+          }
+          try {
+            const response = await retryClient.callTool({
+              name: toolName,
+              arguments: input as Record<string, unknown>,
+            });
+
+            const responseAny = response as {
+              content?: Array<{ type: string; text?: string }>;
+              isError?: boolean;
+            };
+
+            const contentArray = responseAny.content ?? [];
+            if (contentArray.length > 0) {
+              const firstContent = contentArray[0];
+              if (firstContent && firstContent.type === 'text' && firstContent.text !== undefined) {
+                try {
+                  const parsed = JSON.parse(firstContent.text) as Record<string, unknown>;
+                  if (typeof (parsed as { success?: unknown }).success === 'boolean') {
+                    return parsed as unknown as ToolResult;
+                  }
+                  return { success: true, data: parsed as JsonSerializable };
+                } catch {
+                  return {
+                    success: true,
+                    data: { text: firstContent.text },
+                  };
+                }
+              }
+            }
+
+            return {
+              success: !responseAny.isError,
+              data: { content: JSON.stringify(responseAny.content) } as JsonSerializable,
+              error: responseAny.isError ? 'Tool returned error' : undefined,
+              errorCode: responseAny.isError ? ToolErrorCode.UNKNOWN : undefined,
+            };
+          } catch (retryErr) {
+            log.error({ err: retryErr, toolName }, 'MCP tool call retry failed');
+            // Fall through to return error below
+          }
+        }
+      }
+
       return {
         success: false,
         data: null,
-        error: err instanceof Error ? err.message : String(err),
-        errorCode: ToolErrorCode.UNKNOWN,
+        error: errorMessage,
+        errorCode: ToolErrorCode.WORKER_UNAVAILABLE,
       };
     }
   }

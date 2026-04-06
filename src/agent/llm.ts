@@ -8,6 +8,8 @@
  *
  * Also includes claude-oauth: Anthropic PKCE OAuth 2.0 flow using the real
  * Anthropic authorization server (same system used by Claude Code internally).
+ *
+ * And nvidia-nim: NVIDIA's OpenAI-compatible API with free-tier models.
  */
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -28,16 +30,21 @@ const GITHUB_MODELS_BASE_URL = 'https://models.inference.ai.azure.com';
 /** OpenRouter OpenAI-compatible endpoint (free tier available). */
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
+/** NVIDIA NIM OpenAI-compatible endpoint (free tier available). */
+const NVIDIA_NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
 /**
  * Create a Vercel AI SDK LanguageModel from the config.
  *
- * Supports six providers:
+ * Supports eight providers:
  * - `openai`        — Direct OpenAI API (requires paid API key)
  * - `anthropic`     — Direct Anthropic API (requires paid API key)
  * - `groq`          — Groq Cloud (free tier available)
  * - `github-models` — GitHub Models via Azure AI (free via GitHub PAT, no billing)
  * - `openrouter`    — OpenRouter proxy (free tier models available)
  * - `claude-oauth`  — Anthropic PKCE OAuth (uses Claude Pro/Max subscription)
+ * - `nvidia-nim`    — NVIDIA NIM API (free tier models available)
+ * - `local`         — Local OpenAI-compatible server (Ollama, LM Studio, etc.)
  *
  * @param config         - validated app config
  * @param oauthAccessToken - required when provider='claude-oauth'; Bearer token from OAuthManager
@@ -273,6 +280,39 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
         baseURL: 'https://api.anthropic.com/v1',
       });
       return anthropicOAuth(model);
+    }
+
+    case 'nvidia-nim': {
+      if (!config.llm.nvidiaNimApiKey) {
+        throw new ConfigError(
+          'NVIDIA_NIM_API_KEY is required when LLM_PROVIDER=nvidia-nim. ' +
+            'Get a free key at https://build.nvidia.com/',
+          'llm.nvidiaNimApiKey',
+        );
+      }
+      const nim = createOpenAI({
+        name: 'nvidia-nim',
+        baseURL: NVIDIA_NIM_BASE_URL,
+        apiKey: config.llm.nvidiaNimApiKey as unknown as string,
+        compatibility: 'compatible',
+      });
+      return nim(model);
+    }
+
+    case 'local': {
+      if (!config.llm.localBaseUrl) {
+        throw new ConfigError(
+          'LOCAL_BASE_URL is required when LLM_PROVIDER=local',
+          'llm.localBaseUrl',
+        );
+      }
+      const local = createOpenAI({
+        name: 'local',
+        baseURL: config.llm.localBaseUrl,
+        apiKey: (config.llm.localApiKey as unknown as string | undefined) ?? 'local-placeholder',
+        compatibility: 'compatible',
+      });
+      return local(model);
     }
 
     default: {

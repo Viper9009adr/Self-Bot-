@@ -25,6 +25,7 @@ export enum ToolErrorCode {
   NOT_FOUND = 'NOT_FOUND',
   TOOL_NOT_FOUND = 'TOOL_NOT_FOUND',
   WORKER_UNAVAILABLE = 'WORKER_UNAVAILABLE',
+  MEDIA_CAPABILITY_UNAVAILABLE = 'MEDIA_CAPABILITY_UNAVAILABLE',
 }
 
 // ─── ToolArtifact ─────────────────────────────────────────────────────────────

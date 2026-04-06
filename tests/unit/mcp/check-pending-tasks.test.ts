@@ -64,4 +64,16 @@ describe('CheckPendingTasksTool', () => {
     taskQueue.clear();
     await sessionManager.close();
   });
+
+  it('rejects userId when includeAllUsers is true', async () => {
+    const sessionManager = new SessionManager({ store: new InMemorySessionStore(3600) });
+    const taskQueue = makeQueue();
+    const tool = new CheckPendingTasksTool(sessionManager, taskQueue);
+
+    const result = await tool.execute({ includeAllUsers: true, userId: 'someone' }, context);
+    expect(result.success).toBe(false);
+
+    taskQueue.clear();
+    await sessionManager.close();
+  });
 });

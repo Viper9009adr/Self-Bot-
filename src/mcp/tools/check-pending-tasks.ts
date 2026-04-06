@@ -8,10 +8,20 @@ import type { SessionManager } from '../../session/manager.js';
 import type { TaskQueue } from '../../queue/task-queue.js';
 import type { ToolContext, ToolResult } from '../../types/tool.js';
 
-const inputSchema = z.object({
-  userId: z.string().optional().describe('Optional user ID to inspect. Defaults to the current user.'),
-  includeAllUsers: z.boolean().default(false).describe('When true, include pending task snapshots for all active users.'),
-});
+const inputSchema = z
+  .object({
+    userId: z.string().optional().describe('Optional user ID to inspect. Defaults to the current user.'),
+    includeAllUsers: z.boolean().default(false).describe('When true, include pending task snapshots for all active users.'),
+  })
+  .superRefine((input, ctx) => {
+    if (input.includeAllUsers && input.userId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['userId'],
+        message: 'userId cannot be used when includeAllUsers is true',
+      });
+    }
+  });
 
 type Input = z.infer<typeof inputSchema>;
 
@@ -29,8 +39,8 @@ export class CheckPendingTasksTool extends BaseTool<Input> {
   }
 
   protected async run(input: Input, context: ToolContext): Promise<ToolResult> {
-    const requestedUserId = input.userId?.trim() || context.userId;
     const includeAllUsers = input.includeAllUsers === true;
+    const requestedUserId = includeAllUsers ? context.userId : (input.userId?.trim() || context.userId);
     const userIds = includeAllUsers
       ? await this.sessionManager.listUsers()
       : [requestedUserId];
@@ -53,7 +63,8 @@ export class CheckPendingTasksTool extends BaseTool<Input> {
       data: {
         pulseAt: new Date().toISOString(),
         requestedBy: context.userId,
-        ...(includeAllUsers ? { scope: 'all_users' } : { scope: 'single_user' }),
+        scope: includeAllUsers ? 'all_users' : 'single_user',
+        focusUserId: includeAllUsers ? null : requestedUserId,
         queue: {
           size: queueMetrics.size,
           pending: queueMetrics.pending,

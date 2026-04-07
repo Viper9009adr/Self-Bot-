@@ -132,31 +132,33 @@ In offline mode:
 
 The bot continues operating normally in offline mode — sessions remain functional within a single process restart, but memory is not persisted to Meridian until connectivity is restored.
 
-#### DSL Parsing and Backward Compatibility
+#### Session Outcome + Reset Semantics (Memory Fix)
 
-The Meridian session store uses DSL (Domain-Specific Language) format for session data exchange with the Meridian MCP server. Recent fixes ensure robust parsing:
+As implemented by IMP in `MeridianSessionStore.get()` and validated by TST, session reset (`get()` returning `null`) only occurs on **canonical terminal outcomes**:
 
-**Key Changes Implemented by IMP:**
-1. **Dual-field support**: `_extractFirstItem()` now checks both `text` and `content` fields, preferring `text` when available (returned when JSON parse fails) while maintaining backward compatibility with `content` field
-2. **Truthiness handling**: Uses `typeof obj['text'] === 'string'` instead of `obj['text'] || obj['content']` to correctly handle empty strings in the `text` field
-3. **DSL validation**: `_deserialize()` validates content starts with `§F:` DSL marker before attempting regex matching
-4. **Regex fix**: Changed from `/¶data:([\s\S]*?)¶/` to `/¶data:([^¶]*)¶/` to correctly match data field without stopping at `¶` characters within base64-encoded data
-5. **Safe debug logging**: Added metadata-only logging for parsing diagnostics without exposing sensitive session data
+- `not_found`
+- `ttl_expired`
 
-**Response Shape Handling:**
-- **Array responses**: FastMCP may return results as JSON array `[{text: "DSL", ...}]`
-- **Single object responses**: `{text: "DSL", ...}` or `{content: "DSL", ...}`
-- **Empty string handling**: Empty `text` field (`""`) is treated as valid string content (not falsy)
+All other failure paths are treated as **indeterminate** and throw `Session fetch indeterminate: ...` (transport errors, malformed payloads, unknown outcomes, parse failures). This prevents accidental resets during transient Meridian/MCP failures.
 
-**Test Coverage (implemented by TST):**
-- `text` field with valid DSL
-- `text` field with non-DSL content  
-- `content` field only (backward compatibility)
-- Newlines in DSL (multiline data field)
-- Missing `data` field in DSL
-- Array response shape vs single object shape
-- Empty string handling in `text` field
-- `¶` character in base64 data (tests regex fix)
+`SessionManager.getOrCreate()` follows this contract: it creates a new session only when the store returns `null`; it does **not** create a replacement session when `store.get()` throws.
+
+#### Meridian fetch_context Compatibility (v1/v2)
+
+The parser is intentionally backward compatible across payload versions:
+
+- **v2 format (preferred):** `{ text, outcome }`
+- **v1 format (legacy):** `{ content }` (no explicit `outcome`)
+
+Compatibility rules implemented by IMP:
+
+1. `_extractFirstItem()` supports both array and single-object MCP result shapes.
+2. `text` is preferred over `content` when both fields exist.
+3. Empty string `text` is treated as a valid v2 field (no falsy fallback to `content`).
+4. Unknown/missing outcome on v2 payloads is normalized to non-terminal `malformed`.
+5. v1 `content` remains supported as a legacy success path.
+
+For full deterministic matrix details, see `docs/memory-fix-compat.md`.
 
 ### Tuning and Optional
 
@@ -430,6 +432,8 @@ When the AI assistant receives a PDF attachment, it automatically uses the `read
 6. Deliver the combined audio as a voice message
 
 If TTS is not configured, the tool returns the extracted text directly.
+
+> **Type maintenance note (CRT):** `pdf-parse` does not ship complete typings for this project’s usage. We maintain a local shim at `src/types/pdf-parse.d.ts`. When upgrading `pdf-parse`, update that shim in the same PR if the runtime API shape changes.
 
 ## Validation status
 

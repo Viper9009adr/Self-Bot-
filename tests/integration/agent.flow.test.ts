@@ -11,6 +11,7 @@ import { TaskQueue } from '../../src/queue/task-queue.js';
 import { AgentCore } from '../../src/agent/index.js';
 import type { UnifiedMessage } from '../../src/types/message.js';
 import { ToolErrorCode } from '../../src/types/tool.js';
+import type { SessionStore, UserSession } from '../../src/types/session.js';
 
 // ─── Mock Vercel AI SDK ───────────────────────────────────────────────────────
 // We mock the 'ai' module to avoid real LLM calls
@@ -286,6 +287,33 @@ describe('AgentCore integration', () => {
       if (session) {
         expect(session.activeTaskIds).toHaveLength(0);
       }
+    });
+
+    it('does not reset session on transient store.get failure', async () => {
+      let created = 0;
+      const transientStore: SessionStore = {
+        async get(): Promise<UserSession | null> {
+          throw new Error('Session fetch indeterminate: transient_failure');
+        },
+        async set(): Promise<void> {
+          created += 1;
+        },
+        async delete(): Promise<void> {},
+        async has(): Promise<boolean> { return false; },
+        async keys(): Promise<string[]> { return []; },
+        async flush(): Promise<void> {},
+        async close(): Promise<void> {},
+      };
+
+      const transientSessionManager = new SessionManager({
+        store: transientStore,
+        defaultMaxHistoryTokens: 8000,
+      });
+
+      await expect(transientSessionManager.getOrCreate('transient-user')).rejects.toThrow(
+        'Session fetch indeterminate',
+      );
+      expect(created).toBe(0);
     });
   });
 });

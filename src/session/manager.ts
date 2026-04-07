@@ -30,6 +30,11 @@ export class SessionManager {
 
   /**
    * Get an existing session or create a new one.
+   *
+   * Important memory-fix behavior: this method only creates a new session when
+   * the store returns `null` (canonical reset path). If `store.get()` throws an
+   * indeterminate fetch error (for example transient Meridian transport/parse
+   * failures), the error is propagated and no reset session is created.
    */
   async getOrCreate(userId: string): Promise<UserSession> {
     const existing = await this.store.get(userId);

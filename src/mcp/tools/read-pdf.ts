@@ -114,9 +114,8 @@ export class ReadPDFTool extends BaseTool<Input> {
     let pdfText: string;
     let numPages = 0;
     try {
-      const pdfData = await pdf(pdfBuffer, {
-        max: input.maxPages,
-      });
+      const pdfOptions = input.maxPages === undefined ? undefined : { max: input.maxPages };
+      const pdfData = await pdf(pdfBuffer, pdfOptions);
       pdfText = pdfData.text;
       numPages = pdfData.numpages;
     } catch (err) {

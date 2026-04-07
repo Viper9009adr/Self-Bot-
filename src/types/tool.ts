@@ -80,6 +80,16 @@ export interface ToolResult {
   durationMs?: number | undefined;
 }
 
+// ─── Meridian fetch_context outcome (v2) ─────────────────────────────────────
+export enum MeridianFetchOutcome {
+  OK = 'ok',
+  NOT_FOUND = 'not_found',
+  TTL_EXPIRED = 'ttl_expired',
+  EMPTY = 'empty',
+  MALFORMED = 'malformed',
+  TRANSIENT_FAILURE = 'transient_failure',
+}
+
 // ─── ToolContext ──────────────────────────────────────────────────────────────
 export interface ToolContext {
   /** Requesting user's ID */

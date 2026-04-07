@@ -5,7 +5,7 @@
 import { MCPClient } from '../mcp/client.js';
 import type { SessionStore, UserSession } from '../types/session.js';
 import type { ToolContext } from '../types/tool.js';
-import { ToolErrorCode } from '../types/tool.js';
+import { MeridianFetchOutcome, ToolErrorCode } from '../types/tool.js';
 import { childLogger } from '../utils/logger.js';
 
 const log = childLogger({ module: 'session:meridian-store' });
@@ -29,6 +29,11 @@ interface StoredSession {
   expiresAt: number; // Unix epoch milliseconds
 }
 
+interface FetchSnapshot {
+  content: string;
+  outcome: MeridianFetchOutcome;
+}
+
 /**
  * MCP-backed SessionStore that persists sessions to a Meridian MCP server.
  *
@@ -39,7 +44,7 @@ interface StoredSession {
  * - Per-userId promise chain (_withLock) serializes concurrent set()/delete() for same user
  * - Shared indexLock promise chain (_withIndexLock) serializes _indexAdd/_indexRemove
  *
- * KNOWN LIMITATIONS (v1):
+ * KNOWN LIMITATIONS:
  * - Cross-process TTL enforcement not supported: keys() may return expired userIds from other processes
  * - indexLock is in-process only: concurrent processes may cause duplicate/missing index entries
  * - callTool never throws — all paths inspect result.success and degrade gracefully without throwing
@@ -116,7 +121,11 @@ export class MeridianSessionStore implements SessionStore {
    * When offline (Meridian unreachable), only uses in-memory cache.
    *
    * @param userId - Platform-prefixed user identifier (e.g. `tg:123456789`).
-   * @returns The stored `UserSession`, or `null` if absent or expired.
+   * @returns The stored `UserSession`, or `null` only for canonical terminal
+   * fetch outcomes (`not_found`, `ttl_expired`) and local TTL expiry.
+   * @throws Error When fetch outcome is indeterminate (transport/parsing/
+   * malformed payload paths). This is intentional so callers do not silently
+   * treat transient faults as reset-worthy misses.
    */
   async get(userId: string): Promise<UserSession | null> {
     // 1. Cache hit — check TTL
@@ -153,26 +162,41 @@ export class MeridianSessionStore implements SessionStore {
       );
     }
 
-    // 4. Handle connection failure - mark offline and fall back to cache-only
+    // 4. Handle connection failure - mark offline and do not treat as reset
     if (!result.success) {
       // Check for "not connected" error specifically
       if (this._isNotConnectedError(result.errorCode, result.error)) {
         this._setOffline();
         log.warn({ userId, error: result.error }, 'MeridianSessionStore.get: connection failed, using cache-only mode');
-        return null;
+        throw new Error('Session fetch indeterminate: transport unavailable');
       }
 
-      log.warn({ userId, error: result.error }, 'MeridianSessionStore.get: fetch_context failed after retry');
-      return null;
+      log.warn({ userId, error: result.error }, 'MeridianSessionStore.get: fetch_context failed after retry (non-terminal)');
+      throw new Error(`Session fetch indeterminate: ${result.error ?? 'unknown fetch_context failure'}`);
     }
 
-    // 5. Extract the first item — Meridian may return an array or a single object
-    const firstItem = this._extractFirstItem(result.data);
-    if (!firstItem) return null;
+    // 5. Extract normalized snapshot (v2 text+outcome, fallback v1 content)
+    const snapshot = this._extractFirstItem(result.data);
+    if (!snapshot) {
+      throw new Error('Session fetch indeterminate: empty fetch_context payload');
+    }
+
+    if (snapshot.outcome === MeridianFetchOutcome.NOT_FOUND) {
+      return null;
+    }
+    if (snapshot.outcome === MeridianFetchOutcome.TTL_EXPIRED) {
+      this.cache.delete(userId);
+      return null;
+    }
+    if (snapshot.outcome !== MeridianFetchOutcome.OK) {
+      throw new Error(`Session fetch indeterminate: outcome=${snapshot.outcome}`);
+    }
 
     // 6. Deserialize
-    const stored = this._deserialize(firstItem.content);
-    if (!stored) return null;
+    const stored = this._deserialize(snapshot.content);
+    if (!stored) {
+      throw new Error('Session fetch indeterminate: malformed stored session payload');
+    }
 
     // 7. Check TTL
     if (Date.now() >= stored.expiresAt) {
@@ -336,7 +360,7 @@ export class MeridianSessionStore implements SessionStore {
   /**
    * Flush (CLEAR) all sessions — matches SessionStore interface contract.
    *
-   * Skops remote operations if offline (only clears local cache).
+   * Skips remote operations if offline (only clears local cache).
    */
   async flush(): Promise<void> {
     // If offline, just clear local cache
@@ -500,6 +524,9 @@ export class MeridianSessionStore implements SessionStore {
 
     const firstIndexItem = this._extractFirstItem(result.data);
     if (!firstIndexItem) return [];
+    if (firstIndexItem.outcome !== MeridianFetchOutcome.OK) {
+      return [];
+    }
 
     try {
       const match = firstIndexItem.content.match(/¶index:([A-Za-z0-9+/=]*)¶/);
@@ -515,15 +542,19 @@ export class MeridianSessionStore implements SessionStore {
   }
 
   /**
-   * Extract the first item from a Meridian fetch_context response.
+   * Extract and normalize the first fetch_context item.
    * FastMCP may return results as a JSON array OR serialize each element as a
    * separate MCP content block (so callTool sees only the first element as a
    * plain object). This helper normalizes both shapes.
    *
-   * MCPClient.callTool() returns { text: "DSL string" } when JSON parse fails,
-   * but we also need to support { content: "..." } for backward compatibility.
+   * Compatibility contract:
+   * - v2 payloads: `{ text, outcome }` (preferred, explicit outcome semantics)
+   * - v1 payloads: `{ content }` (legacy fallback, treated as OK parse path)
+   *
+   * For mixed payloads, `text` is preferred over `content` to preserve v2
+   * semantics and avoid silently overriding explicit outcomes.
    */
-  private _extractFirstItem(data: unknown): { content: string } | null {
+  private _extractFirstItem(data: unknown): FetchSnapshot | null {
     if (!data) return null;
 
     log.debug({
@@ -534,13 +565,13 @@ export class MeridianSessionStore implements SessionStore {
     
     // Array shape: [{session_id, content, ...}, ...]
     if (Array.isArray(data)) {
-      const first = data[0] as { text?: string; content?: string } | undefined;
+      const first = data[0] as { text?: string; content?: string; outcome?: string } | undefined;
       if (!first) return null;
-      
-      // Check text field first, then content field for backward compatibility
-      // Use typeof check to handle empty string "" in text field
+
+      // v2: prefer text+outcome. v1 fallback: content implies OK parse path.
       const content = typeof first.text === 'string' ? first.text : first.content;
       if (typeof content !== 'string') return null;
+      const outcome = this._normalizeOutcome(first.outcome, typeof first.text === 'string');
       
       log.debug({ 
         hasText: !!first.text, 
@@ -548,16 +579,19 @@ export class MeridianSessionStore implements SessionStore {
         contentLength: content.length 
       }, '_extractFirstItem: extracted from array');
       
-      return { content };
+      return { content, outcome };
     }
     
     // Single-object shape: {session_id, content, ...} or {text: "...", ...}
     const obj = data as Record<string, unknown>;
     
-    // Check text field first, then content field for backward compatibility
-    // Use typeof check to handle empty string "" in text field
+    // Check text field first, then content field for backward compatibility.
     const content = typeof obj['text'] === 'string' ? obj['text'] : obj['content'];
     if (typeof content !== 'string') return null;
+    const outcome = this._normalizeOutcome(
+      typeof obj['outcome'] === 'string' ? obj['outcome'] : undefined,
+      typeof obj['text'] === 'string',
+    );
     
     log.debug({ 
       hasText: !!obj['text'], 
@@ -565,7 +599,20 @@ export class MeridianSessionStore implements SessionStore {
       contentLength: content.length 
     }, '_extractFirstItem: extracted from object');
     
-    return { content: content as string };
+    return { content: content as string, outcome };
+  }
+
+  private _normalizeOutcome(rawOutcome: string | undefined, hasTextField: boolean): MeridianFetchOutcome {
+    if (rawOutcome === MeridianFetchOutcome.NOT_FOUND) return MeridianFetchOutcome.NOT_FOUND;
+    if (rawOutcome === MeridianFetchOutcome.TTL_EXPIRED) return MeridianFetchOutcome.TTL_EXPIRED;
+    if (rawOutcome === MeridianFetchOutcome.OK) return MeridianFetchOutcome.OK;
+    if (rawOutcome === MeridianFetchOutcome.EMPTY) return MeridianFetchOutcome.EMPTY;
+    if (rawOutcome === MeridianFetchOutcome.MALFORMED) return MeridianFetchOutcome.MALFORMED;
+    if (rawOutcome === MeridianFetchOutcome.TRANSIENT_FAILURE) return MeridianFetchOutcome.TRANSIENT_FAILURE;
+    // v1 fallback path: content-only payloads had no explicit outcome.
+    // Unknown/missing outcomes on v2-style payloads are treated as MALFORMED
+    // (non-terminal) so callers do not reset session state by accident.
+    return hasTextField ? MeridianFetchOutcome.MALFORMED : MeridianFetchOutcome.OK;
   }
 
   private _deserialize(content: string): StoredSession | null {
@@ -616,6 +663,7 @@ export class MeridianSessionStore implements SessionStore {
   private _buildSessionDsl(userId: string, stored: StoredSession): string {
     return (
       `§F:${AGENT_CODE}|T:${AGENT_CODE}|I:${SESSION_KEY_PREFIX}${userId}|P:1|S:C\n` +
+      `¶outcome:${MeridianFetchOutcome.OK}¶\n` +
       `¶data:${Buffer.from(JSON.stringify(stored)).toString('base64')}¶\n` +
       `§`
     );

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { MeridianSessionStore } from '../../../src/session/meridian-store.js';
 import type { UserSession } from '../../../src/types/session.js';
 import { DEFAULT_MEMORY_POLICY } from '../../../src/types/session.js';
+import { MeridianFetchOutcome } from '../../../src/types/tool.js';
 
 // Mock MCPClient to avoid actual network calls
 const mockCallTool = mock(() => Promise.resolve({ success: true, data: {} }));
@@ -34,11 +35,15 @@ describe('MeridianSessionStore DSL parsing', () => {
 
   describe('_extractFirstItem', () => {
     it('should extract content from text field when JSON parse fails', () => {
-      const data = { text: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§' };
+      const data = {
+        text: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+        outcome: 'ok',
+      };
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§'
+        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+        outcome: MeridianFetchOutcome.OK,
       });
     });
 
@@ -47,30 +52,37 @@ describe('MeridianSessionStore DSL parsing', () => {
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§'
+        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+        outcome: MeridianFetchOutcome.OK,
       });
     });
 
     it('should prefer text field over content field when both exist', () => {
       const data = { 
         text: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:text-field¶\n§',
+        outcome: 'ok',
         content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:content-field¶\n§'
       };
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:text-field¶\n§'
+        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:text-field¶\n§',
+        outcome: MeridianFetchOutcome.OK,
       });
     });
 
     it('should handle array response with text field', () => {
       const data = [
-        { text: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§' }
+        {
+          text: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+          outcome: 'ok',
+        }
       ];
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§'
+        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+        outcome: MeridianFetchOutcome.OK,
       });
     });
 
@@ -81,7 +93,8 @@ describe('MeridianSessionStore DSL parsing', () => {
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§'
+        content: '§F:SES|T:SES|I:session:test|P:1|S:C\n¶data:eyJzZXNzaW9uIjp7InVzZXJJZCI6InRlc3QifSwiZXhwaXJlc0F0IjoxMjM0NTY3ODkwfQ==¶\n§',
+        outcome: MeridianFetchOutcome.OK,
       });
     });
 
@@ -90,7 +103,8 @@ describe('MeridianSessionStore DSL parsing', () => {
       const result = store['_extractFirstItem'](data);
       
       expect(result).toEqual({
-        content: 'This is just plain text, not DSL'
+        content: 'This is just plain text, not DSL',
+        outcome: MeridianFetchOutcome.MALFORMED,
       });
       // Note: _deserialize will reject this as non-DSL content
     });
@@ -104,7 +118,8 @@ describe('MeridianSessionStore DSL parsing', () => {
       
       // Should return empty string from text field, not fall back to content
       expect(result).toEqual({
-        content: ''
+        content: '',
+        outcome: MeridianFetchOutcome.MALFORMED,
       });
     });
 
@@ -119,8 +134,23 @@ describe('MeridianSessionStore DSL parsing', () => {
       
       // Should return empty string from text field, not fall back to content
       expect(result).toEqual({
-        content: ''
+        content: '',
+        outcome: MeridianFetchOutcome.MALFORMED,
       });
+    });
+
+    it('should keep terminal outcome not_found from v2 payload', () => {
+      const data = { text: '', outcome: 'not_found' };
+      const result = store['_extractFirstItem'](data);
+
+      expect(result).toEqual({ content: '', outcome: MeridianFetchOutcome.NOT_FOUND });
+    });
+
+    it('should keep terminal outcome ttl_expired from v2 payload', () => {
+      const data = { text: '', outcome: 'ttl_expired' };
+      const result = store['_extractFirstItem'](data);
+
+      expect(result).toEqual({ content: '', outcome: MeridianFetchOutcome.TTL_EXPIRED });
     });
 
     it('should return null for empty data', () => {
@@ -287,7 +317,7 @@ describe('MeridianSessionStore DSL parsing', () => {
 
       mockCallTool.mockResolvedValue({
         success: true,
-        data: { text: validDSL }
+        data: { text: validDSL, outcome: 'ok' }
       });
 
       const result = await store.get('test-user');
@@ -331,15 +361,13 @@ describe('MeridianSessionStore DSL parsing', () => {
       expect(result).toEqual(validSession);
     });
 
-    it('should return null when MCP returns non-DSL plain text', async () => {
+    it('should throw when MCP returns non-DSL plain text (non-terminal parse path)', async () => {
       mockCallTool.mockResolvedValue({
         success: true,
         data: { text: 'This is just plain text, not DSL' }
       });
 
-      const result = await store.get('test-user');
-      
-      expect(result).toBeNull();
+      await expect(store.get('test-user')).rejects.toThrow('Session fetch indeterminate');
     });
 
     it('should handle array response from MCP', async () => {
@@ -365,12 +393,32 @@ describe('MeridianSessionStore DSL parsing', () => {
 
       mockCallTool.mockResolvedValue({
         success: true,
-        data: [{ text: validDSL }]
+        data: [{ text: validDSL, outcome: 'ok' }]
       });
 
       const result = await store.get('test-user');
       
       expect(result).toEqual(validSession);
+    });
+
+    it('should return null on canonical not_found outcome', async () => {
+      mockCallTool.mockResolvedValue({
+        success: true,
+        data: { text: '', outcome: 'not_found' }
+      });
+
+      const result = await store.get('missing-user');
+      expect(result).toBeNull();
+    });
+
+    it('should return null on canonical ttl_expired outcome', async () => {
+      mockCallTool.mockResolvedValue({
+        success: true,
+        data: { text: '', outcome: 'ttl_expired' }
+      });
+
+      const result = await store.get('expired-user');
+      expect(result).toBeNull();
     });
   });
 });

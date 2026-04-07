@@ -35,11 +35,8 @@ import { GenerateImageTool } from './mcp/tools/generate-image.js';
 import { EditImageTool } from './mcp/tools/edit-image.js';
 import { TranscribeAudioTool } from './mcp/tools/transcribe-audio.js';
 import { SynthesizeSpeechTool } from './mcp/tools/synthesize-speech.js';
-<<<<<<< HEAD
 import { ReadPDFTool } from './mcp/tools/read-pdf.js';
-=======
 import { CheckPendingTasksTool } from './mcp/tools/check-pending-tasks.js';
->>>>>>> 245d470ece906f72a28d872d1c08cbc831894c66
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
 import type { FileAttachment } from './types/message.js';
@@ -181,11 +178,8 @@ async function bootstrap(): Promise<void> {
     new EditImageTool(mediaService),
     new TranscribeAudioTool(mediaService),
     new SynthesizeSpeechTool(mediaService),
-<<<<<<< HEAD
     new ReadPDFTool(mediaService),
-=======
     new CheckPendingTasksTool(sessionManager, taskQueue),
->>>>>>> 245d470ece906f72a28d872d1c08cbc831894c66
   ]);
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
 

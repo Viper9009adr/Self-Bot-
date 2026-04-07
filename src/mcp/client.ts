@@ -72,6 +72,53 @@ export class MCPClient {
   private readonly maxRetries = 1;
   private readonly baseDelayMs = 100;
 
+  private _toToolResultFromResponse(
+    toolName: string,
+    responseAny: {
+      content?: Array<{ type: string; text?: string }>;
+      isError?: boolean;
+    },
+  ): ToolResult {
+    const contentArray = responseAny.content ?? [];
+    if (contentArray.length > 0) {
+      const firstContent = contentArray[0];
+      if (firstContent && firstContent.type === 'text' && firstContent.text !== undefined) {
+        try {
+          const parsed = JSON.parse(firstContent.text) as Record<string, unknown>;
+          // If the parsed value already has a boolean `success` field it is a
+          // ToolResult-shaped payload (non-Meridian tools or future versions).
+          // Otherwise it is a raw Meridian response dict/array — wrap it.
+          if (typeof (parsed as { success?: unknown }).success === 'boolean') {
+            return parsed as unknown as ToolResult;
+          }
+          return { success: true, data: parsed as JsonSerializable };
+        } catch {
+          // fetch_context is expected to be JSON. A plain-text fallback here is
+          // deterministic parse failure and must not be treated as "not found".
+          if (toolName === 'fetch_context') {
+            return {
+              success: false,
+              data: null,
+              error: 'Malformed fetch_context payload (non-JSON text content)',
+              errorCode: ToolErrorCode.PARSE_ERROR,
+            };
+          }
+          return {
+            success: true,
+            data: { text: firstContent.text },
+          };
+        }
+      }
+    }
+
+    return {
+      success: !responseAny.isError,
+      data: { content: JSON.stringify(responseAny.content) } as JsonSerializable,
+      error: responseAny.isError ? 'Tool returned error' : undefined,
+      errorCode: responseAny.isError ? ToolErrorCode.UNKNOWN : undefined,
+    };
+  }
+
   constructor(options: MCPClientOptions) {
     this.options = options;
   }
@@ -180,34 +227,7 @@ export class MCPClient {
         isError?: boolean;
       };
 
-      const contentArray = responseAny.content ?? [];
-      if (contentArray.length > 0) {
-        const firstContent = contentArray[0];
-        if (firstContent && firstContent.type === 'text' && firstContent.text !== undefined) {
-          try {
-            const parsed = JSON.parse(firstContent.text) as Record<string, unknown>;
-            // If the parsed value already has a boolean `success` field it is a
-            // ToolResult-shaped payload (non-Meridian tools or future versions).
-            // Otherwise it is a raw Meridian response dict/array — wrap it.
-            if (typeof (parsed as { success?: unknown }).success === 'boolean') {
-              return parsed as unknown as ToolResult;
-            }
-            return { success: true, data: parsed as JsonSerializable };
-          } catch {
-            return {
-              success: true,
-              data: { text: firstContent.text },
-            };
-          }
-        }
-      }
-
-      return {
-        success: !responseAny.isError,
-        data: { content: JSON.stringify(responseAny.content) } as JsonSerializable,
-        error: responseAny.isError ? 'Tool returned error' : undefined,
-        errorCode: responseAny.isError ? ToolErrorCode.UNKNOWN : undefined,
-      };
+      return this._toToolResultFromResponse(toolName, responseAny);
     } catch (err) {
       // Mark as disconnected on connection error during tool call
       log.error({ err, toolName }, 'MCP tool call failed, marking as disconnected');
@@ -245,32 +265,7 @@ export class MCPClient {
               content?: Array<{ type: string; text?: string }>;
               isError?: boolean;
             };
-
-            const contentArray = responseAny.content ?? [];
-            if (contentArray.length > 0) {
-              const firstContent = contentArray[0];
-              if (firstContent && firstContent.type === 'text' && firstContent.text !== undefined) {
-                try {
-                  const parsed = JSON.parse(firstContent.text) as Record<string, unknown>;
-                  if (typeof (parsed as { success?: unknown }).success === 'boolean') {
-                    return parsed as unknown as ToolResult;
-                  }
-                  return { success: true, data: parsed as JsonSerializable };
-                } catch {
-                  return {
-                    success: true,
-                    data: { text: firstContent.text },
-                  };
-                }
-              }
-            }
-
-            return {
-              success: !responseAny.isError,
-              data: { content: JSON.stringify(responseAny.content) } as JsonSerializable,
-              error: responseAny.isError ? 'Tool returned error' : undefined,
-              errorCode: responseAny.isError ? ToolErrorCode.UNKNOWN : undefined,
-            };
+            return this._toToolResultFromResponse(toolName, responseAny);
           } catch (retryErr) {
             log.error({ err: retryErr, toolName }, 'MCP tool call retry failed');
             // Fall through to return error below

@@ -37,6 +37,7 @@ import { TranscribeAudioTool } from './mcp/tools/transcribe-audio.js';
 import { SynthesizeSpeechTool } from './mcp/tools/synthesize-speech.js';
 import { ReadPDFTool } from './mcp/tools/read-pdf.js';
 import { CheckPendingTasksTool } from './mcp/tools/check-pending-tasks.js';
+import { TerminalSessionTool } from './mcp/tools/terminal-session.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
 import type { FileAttachment } from './types/message.js';
@@ -181,6 +182,15 @@ async function bootstrap(): Promise<void> {
     new ReadPDFTool(mediaService),
     new CheckPendingTasksTool(sessionManager, taskQueue),
   ]);
+
+  // Initialize terminal session tool
+  const terminalSessionTool = new TerminalSessionTool();
+  await terminalSessionTool.initialize();
+  toolRegistry.register(terminalSessionTool);
+
+  shutdown.register(async () => {
+    await terminalSessionTool.shutdown();
+  });
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
 
   // ── 4b. Remote MCP Tools ─────────────────────────────────────────────────

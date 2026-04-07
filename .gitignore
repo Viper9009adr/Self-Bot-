@@ -90,6 +90,8 @@ test-oauth.ts
 
 # AI session logs (may contain sensitive context)
 .implementations/
+manifest.txt
+completion.txt
 
 # Development-only scripts and tools
 Meridian/

@@ -184,6 +184,16 @@ export const ConfigSchema = z.object({
     imageQuality: z.enum(['standard', 'hd', 'low', 'medium', 'high', 'auto']).default('standard'),
     nvidiaNimImageModel: z.string().default('stabilityai/stable-diffusion-3-medium'),
   }).optional(),
+
+  // ── Terminal ────────────────────────────────────────────────────────────────
+  terminal: z.object({
+    skillsPath: z.string().default('./terminal-skills'),
+    commandAllowlist: z.array(z.string()).default(['opencode', 'claude', 'codex', 'git']),
+    cwdAllowlist: z.array(z.string()).default(['/home', '/tmp']),
+    envBlocklist: z.array(z.string()).default(['AWS_', 'SECRET_', 'TOKEN_', 'API_KEY']),
+    defaultTimeout: z.coerce.number().int().min(1000).default(300000),
+    maxConcurrentSessions: z.coerce.number().int().min(1).default(5),
+  }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

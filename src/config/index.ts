@@ -107,22 +107,38 @@ function buildRawConfig(): Record<string, unknown> {
       },
     } : {}),
 
-    // Conditionally include media block only when at least one MEDIA var is set
-    ...(process.env['MEDIA_IMAGE_MODEL'] || process.env['MEDIA_STT_MODEL'] ||
-        process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ||
-        process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'] ? {
-      media: {
-        imageModel: process.env['MEDIA_IMAGE_MODEL'],
-        sttModel: process.env['MEDIA_STT_MODEL'],
-        ttsModel: process.env['MEDIA_TTS_MODEL'],
-        ttsVoice: process.env['MEDIA_TTS_VOICE'],
-        ttsEnabled: process.env['MEDIA_TTS_ENABLED'],
-        imageSize: process.env['MEDIA_IMAGE_SIZE'],
-        imageQuality: process.env['MEDIA_IMAGE_QUALITY'],
-        nvidiaNimImageModel: process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'],
-      },
-    } : {}),
-  };
+// Conditionally include media block only when at least one MEDIA var is set
+  ...(process.env['MEDIA_IMAGE_MODEL'] || process.env['MEDIA_STT_MODEL'] ||
+  process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ||
+  process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'] ? {
+    media: {
+      imageModel: process.env['MEDIA_IMAGE_MODEL'],
+      sttModel: process.env['MEDIA_STT_MODEL'],
+      ttsModel: process.env['MEDIA_TTS_MODEL'],
+      ttsVoice: process.env['MEDIA_TTS_VOICE'],
+      ttsEnabled: process.env['MEDIA_TTS_ENABLED'],
+      imageSize: process.env['MEDIA_IMAGE_SIZE'],
+      imageQuality: process.env['MEDIA_IMAGE_QUALITY'],
+      nvidiaNimImageModel: process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'],
+    },
+  } : {}),
+
+  // Terminal configuration
+  terminal: {
+    skillsPath: process.env['TERMINAL_SKILLS_PATH'],
+    commandAllowlist: process.env['TERMINAL_COMMAND_ALLOWLIST']
+      ? process.env['TERMINAL_COMMAND_ALLOWLIST'].split(',').map(s => s.trim())
+      : undefined,
+    cwdAllowlist: process.env['TERMINAL_CWD_ALLOWLIST']
+      ? process.env['TERMINAL_CWD_ALLOWLIST'].split(',').map(s => s.trim())
+      : undefined,
+    envBlocklist: process.env['TERMINAL_ENV_BLOCKLIST']
+      ? process.env['TERMINAL_ENV_BLOCKLIST'].split(',').map(s => s.trim())
+      : undefined,
+    defaultTimeout: process.env['TERMINAL_DEFAULT_TIMEOUT'],
+    maxConcurrentSessions: process.env['TERMINAL_MAX_CONCURRENT_SESSIONS'],
+  },
+};
 }
 
 let _config: Config | null = null;

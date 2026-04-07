@@ -435,6 +435,243 @@ If TTS is not configured, the tool returns the extracted text directly.
 
 > **Type maintenance note (CRT):** `pdf-parse` does not ship complete typings for this project’s usage. We maintain a local shim at `src/types/pdf-parse.d.ts`. When upgrading `pdf-parse`, update that shim in the same PR if the runtime API shape changes.
 
+## Terminal Skills
+
+Self-BOT can orchestrate external CLI tools (OpenCode, Claude CLI, Codex, etc.) through skill-based `.md` definitions. The LLM stays in the loop as orchestrator, managing terminal sessions via the `terminal_session` MCP tool.
+
+### Configuration
+
+Terminal Skills are configured via environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `TERMINAL_SKILLS_PATH` | Directory containing skill `.md` files | `./terminal-skills` |
+| `TERMINAL_COMMAND_ALLOWLIST` | Comma-separated list of allowed commands | `opencode,claude,codex,git` |
+| `TERMINAL_CWD_ALLOWLIST` | Comma-separated list of allowed working directories | `/home,/tmp` |
+| `TERMINAL_ENV_BLOCKLIST` | Comma-separated env var prefixes to filter | `AWS_,SECRET_,TOKEN_,API_KEY` |
+| `TERMINAL_DEFAULT_TIMEOUT` | Default process timeout in ms | `300000` (5 min) |
+| `TERMINAL_MAX_CONCURRENT_SESSIONS` | Max concurrent terminal sessions | `5` |
+
+### Skill File Format
+
+Skills are defined in `.md` files with YAML frontmatter:
+
+```yaml
+---
+name: opencode
+description: AI coding assistant - interact with OpenCode CLI
+command: opencode
+args:
+  - --yes
+arguments:
+  - name: provider
+    type: string
+    required: false
+    description: LLM provider (openai, anthropic, etc.)
+    default: openai
+  - name: model
+    type: string
+    required: false
+    description: Model name
+  - name: project
+    type: string
+    required: false
+    description: Working directory
+cwd: /home
+timeout: 300000
+---
+
+# OpenCode Skill
+
+This skill launches the OpenCode CLI tool for AI-assisted coding.
+```
+
+**Frontmatter fields:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Yes | Unique skill name (matches filename without `.md`) |
+| `description` | string | Yes | Human-readable description |
+| `command` | string | Yes | Command to execute |
+| `args` | string[] | No | Default arguments passed to the command |
+| `arguments` | object[] | No | Argument schema for validation |
+| `cwd` | string | No | Default working directory |
+| `env` | object | No | Environment variables to set |
+| `timeout` | number | No | Process timeout in milliseconds |
+
+### MCP Tool: terminal_session
+
+The `terminal_session` tool manages terminal sessions for skill execution.
+
+**Tool Name:** `terminal_session`
+
+**Description:** Manage terminal sessions for executing CLI tools via skill definitions. Use "list" to see available skills, "start" to launch a tool, "input" to send data, "output" to read results, "terminate" to stop a session.
+
+**Input Parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `action` | string | Yes | One of: `start`, `input`, `output`, `terminate`, `list` |
+| `skillName` | string | For `start` | Name of the skill to execute |
+| `args` | object | No | Key-value pairs for skill arguments |
+| `cwd` | string | No | Custom working directory (overrides skill default) |
+| `sessionId` | string | For `input`, `output`, `terminate` | Session ID from a previous `start` action |
+| `input` | string | For `input` | Text to send to the running process |
+| `timeout` | number | No | Custom timeout in milliseconds |
+
+#### Action: start
+
+Launch a skill and get output when it completes.
+
+**Request:**
+```json
+{
+  "action": "start",
+  "skillName": "opencode",
+  "args": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
+    "project": "/home/myproject"
+  }
+}
+```
+
+**Response (200):**
+```json
+{
+  "action": "start",
+  "success": true,
+  "sessionId": "abc12345",
+  "output": {
+    "sessionId": "abc12345",
+    "stdout": "...",
+    "stderr": "...",
+    "exitCode": 0,
+    "timedOut": false
+  }
+}
+```
+
+#### Action: input
+
+Send input to a running session.
+
+**Request:**
+```json
+{
+  "action": "input",
+  "sessionId": "abc12345",
+  "input": "Hello, world\n"
+}
+```
+
+#### Action: output
+
+Retrieve output from a session.
+
+**Request:**
+```json
+{
+  "action": "output",
+  "sessionId": "abc12345"
+}
+```
+
+#### Action: terminate
+
+Stop a running session.
+
+**Request:**
+```json
+{
+  "action": "terminate",
+  "sessionId": "abc12345"
+}
+```
+
+#### Action: list
+
+List all active sessions.
+
+**Request:**
+```json
+{
+  "action": "list"
+}
+```
+
+**Response:**
+```json
+{
+  "action": "list",
+  "success": true,
+  "sessions": [
+    {
+      "id": "abc12345",
+      "skillName": "opencode",
+      "startedAt": 1706745600000,
+      "ended": false
+    }
+  ]
+}
+```
+
+### Security Features
+
+The Terminal Skills feature implements multiple security controls:
+
+1. **No shell execution** — Processes are spawned with `shell: false`, preventing shell injection attacks.
+
+2. **Command allowlist** — Only commands explicitly listed in `TERMINAL_COMMAND_ALLOWLIST` can be executed.
+
+3. **Working directory restriction** — CWD must resolve to a path under one of the `TERMINAL_CWD_ALLOWLIST` prefixes. Path traversal (`..`) is detected and blocked.
+
+4. **Environment variable filtering** — Variables matching prefixes in `TERMINAL_ENV_BLOCKLIST` (e.g., `AWS_`, `SECRET_`, `TOKEN_`, `API_KEY`) are stripped from the subprocess environment.
+
+5. **Process timeout** — Each session has a timeout. On timeout, SIGTERM is sent first, then SIGKILL after 5 seconds if the process doesn't terminate.
+
+6. **Concurrent session limit** — Maximum concurrent sessions is capped by `TERMINAL_MAX_CONCURRENT_SESSIONS`.
+
+### Creating Custom Skills
+
+1. Create a `.md` file in the skills directory (default: `./terminal-skills`)
+2. Add YAML frontmatter with the skill definition
+3. Optionally add markdown documentation after the frontmatter
+
+Example: `terminal-skills/mytool.md`
+
+```yaml
+---
+name: mytool
+description: My custom CLI tool
+command: mytool
+args:
+  - --verbose
+arguments:
+  - name: input
+    type: string
+    required: true
+    description: Input file path
+  - name: output
+    type: string
+    required: false
+    description: Output file path
+    default: output.txt
+cwd: /home
+timeout: 60000
+env:
+  MY_TOOL_CONFIG: "value"
+---
+
+# MyTool Skill
+
+This skill runs my custom CLI tool.
+
+## Requirements
+
+- Install mytool: `npm install -g mytool`
+```
+
 ## Validation status
 
 Latest validated state for **Self-BOT-Providers**:

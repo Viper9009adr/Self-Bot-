@@ -2,7 +2,16 @@
  * tests/integration/media-routing-matrix.test.ts
  * Media routing matrix coverage for capability-scoped behavior.
  */
-import { describe, expect, it } from 'bun:test';
+type BunTestModule = typeof import('bun:test');
+
+const bunTest: BunTestModule | null =
+  typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined' ? await import('bun:test') : null;
+
+const describe = bunTest?.describe ?? (() => {}) as unknown as BunTestModule['describe'];
+const it = bunTest?.it ?? (() => {}) as unknown as BunTestModule['it'];
+const expect = bunTest?.expect ?? ((() => {
+  throw new Error('expect() is unavailable outside Bun runtime');
+}) as unknown as BunTestModule['expect']);
 import type { Config } from '../../src/config/index.js';
 import {
   createMediaCapabilityUnavailableError,

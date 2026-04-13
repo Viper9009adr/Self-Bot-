@@ -46,6 +46,10 @@ test-results/
 .opencode/
 opencode.json
 
+# Qwen
+.qwen/
+QWEN.md
+
 # OAuth token cache (contains sensitive credentials)
 .oauth-tokens.json
 .oauth-tokens.json.tmp
@@ -85,13 +89,22 @@ session-data/
 auth-tokens.*
 .oauth-tokens.*
 
-# Diagnostic/debug scripts
-test-oauth.ts
+# Diagnostic/debug scripts (root-level test and experiment files)
+test_*.mjs
+test-*.js
+test-*.ts
+test_*.js
+test_*.ts
+CHANGELOG.md
+docs/
 
 # AI session logs (may contain sensitive context)
 .implementations/
 manifest.txt
 completion.txt
+
+# Archived development artifacts
+.implementations/README-archived-*.md
 
 # Development-only scripts and tools
 Meridian/
@@ -104,3 +117,6 @@ web/node_modules/
 # Whatsapp Integration
 .whatsapp-session/
 .wwebjs_cache/
+
+# Future
+backend/

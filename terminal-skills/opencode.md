@@ -1,46 +1,28 @@
 ---
 name: opencode
-description: AI coding assistant - interact with OpenCode CLI
+description: AI coding assistant - interact with OpenCode CLI. Use approve=true to auto-approve file permission changes.
 command: opencode
 args:
-  - --yes
+  - run
+requiresShellMode: true
+env:
+  PATH: /home/viper9009adr/.opencode/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 arguments:
-  - name: provider
+  - name: prompt
     type: string
+    required: true
+    description: Task prompt for OpenCode to execute
+  - name: approve
+    type: boolean
     required: false
-    description: LLM provider (openai, anthropic, etc.)
-    default: openai
-  - name: model
-    type: string
-    required: false
-    description: Model name
-  - name: project
-    type: string
-    required: false
-    description: Working directory
+    default: true
+    description: Auto-approve file permission changes (adds --dangerously-skip-permissions flag)
 cwd: /home
-timeout: 300000
+timeout: 30000
+shellQuoting:
+  argRules:
+    - position: 0
+      quote: false
+    - position: -1
+      quote: true
 ---
-
-# OpenCode Skill
-
-This skill launches the OpenCode CLI tool for AI-assisted coding.
-
-## Usage
-
-```json
-{
-  "action": "start",
-  "skillName": "opencode",
-  "args": {
-    "provider": "anthropic",
-    "model": "claude-sonnet-4-20250514",
-    "project": "/home/myproject"
-  }
-}
-```
-
-## Requirements
-
-- OpenCode must be installed: `npm install -g opencode`
-- Valid API key for the selected provider

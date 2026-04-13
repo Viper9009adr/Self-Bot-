@@ -39,3 +39,25 @@ export interface IAdapter {
   /** Whether the adapter is currently running */
   isRunning(): boolean;
 }
+
+/**
+ * Migration-friendly boundary view used by compatibility tests.
+ * Keeps current adapter API stable while exposing `channel` naming.
+ */
+export interface AdapterBoundaryContract extends Omit<IAdapter, 'name'> {
+  readonly channel: string;
+}
+
+/** Maps current `name` field to migration contract `channel`. */
+export function toAdapterBoundaryContract(adapter: IAdapter): AdapterBoundaryContract {
+  return {
+    get channel() {
+      return adapter.name;
+    },
+    initialize: () => adapter.initialize(),
+    sendResponse: (response) => adapter.sendResponse(response),
+    onMessage: (handler) => adapter.onMessage(handler),
+    shutdown: () => adapter.shutdown(),
+    isRunning: () => adapter.isRunning(),
+  };
+}

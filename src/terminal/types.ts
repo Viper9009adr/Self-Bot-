@@ -13,7 +13,7 @@ export interface SkillArgument {
   type: string;
   required: boolean;
   description: string;
-  default: string;
+  default: string | undefined;
 }
 
 /** Complete skill definition parsed from YAML frontmatter */
@@ -34,6 +34,8 @@ export interface SkillDefinition {
   env: Record<string, string>;
   /** Timeout in milliseconds */
   timeout: number;
+  requiresShellMode?: boolean;
+  shellQuoting?: ShellQuotingRules;
 }
 
 // ─── Session Management ────────────────────────────────────────────────────────
@@ -134,6 +136,43 @@ export interface TerminalConfig {
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
+}
+
+/**
+ * Rule for shell quoting behavior at a specific argument position.
+ * 
+ * Specifies whether an argument at a given position should be shell-quoted when
+ * executing a command. Flags (arguments starting with '-') are always unquoted
+ * regardless of rules. Position indices support both positive (0, 1, 2...) and
+ * negative (-1, -2...) for counting from the end of the argument array.
+ */
+export interface ShellQuotingRule {
+  /** 
+   * Argument position (0-based). Negative values count from end of array.
+   * @example 0 - First argument
+   * @example 1 - Second argument
+   * @example -1 - Last argument
+   * @example -2 - Second-to-last argument
+   */
+  position: number;
+  /** 
+   * If false, argument will not be shell-quoted even if it contains spaces.
+   * If true (or unspecified), argument will be quoted if not a flag.
+   */
+  quote: boolean;
+}
+
+/**
+ * Container for shell quoting rules for a skill command.
+ * 
+ * Defines how arguments should be quoted when executing a shell command.
+ * This is particularly useful for tools like OpenCode that require specific
+ * arguments (like subcommands) to remain unquoted while others (like prompts)
+ * must be quoted to preserve spaces and special characters.
+ */
+export interface ShellQuotingRules {
+  /** Array of position-based quoting rules. Load-time validation ensures no duplicate positions. */
+  argRules: ShellQuotingRule[];
 }
 
 /** Loaded skill with metadata */

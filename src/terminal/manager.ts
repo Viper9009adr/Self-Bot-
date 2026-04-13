@@ -33,7 +33,7 @@ export class TerminalSessionManager {
   }
 
   /**
-   * Start a new terminal session.
+   * Start a new terminal session with blocking output collection.
    */
   async startSession(
     skillName: string,
@@ -66,7 +66,9 @@ export class TerminalSessionManager {
     if (!validation.valid) {
       throw {
         code: TerminalErrorCode.INVALID_ARGS,
-        message: validation.errors.join('; '),
+        message: validation.invalidCwd
+          ? validation.errors.find((error) => error.startsWith('INVALID_CWD:')) ?? 'INVALID_CWD: invalid cwd'
+          : validation.errors.join('; '),
       };
     }
 
@@ -81,7 +83,8 @@ export class TerminalSessionManager {
       this.config,
       userArgs,
       customCwd,
-      customTimeout
+      customTimeout,
+      validation.normalizedCwd
     );
 
     // Create session
@@ -99,20 +102,30 @@ export class TerminalSessionManager {
 
     this.sessions.set(sessionId, session);
 
-    // Wait for output
-    let output: TerminalOutput;
-    try {
-      output = await promise;
-      output.sessionId = sessionId;
-    } catch (err) {
-      session.ended = true;
-      session.exitCode = -1;
-      this.sessions.delete(sessionId);
-      throw {
-        code: TerminalErrorCode.PROCESS_CRASHED,
-        message: (err as Error).message,
-      };
-    }
+   // Wait for output
+   let output: TerminalOutput;
+   try {
+     output = await promise;
+     output.sessionId = sessionId;
+   } catch (err) {
+     session.ended = true;
+     session.exitCode = -1;
+     this.sessions.delete(sessionId);
+     throw {
+       code: TerminalErrorCode.PROCESS_CRASHED,
+       message: (err as Error).message,
+     };
+   }
+
+   // Check for early exit with non-zero code
+   const elapsed = Date.now() - session.startedAt;
+   if (output.exitCode !== 0 && output.exitCode !== null && elapsed < 1000) {
+     const stderrInfo = output.stderr.length > 0 ? `\nStderr: ${output.stderr}` : '';
+     throw {
+       code: TerminalErrorCode.PROCESS_CRASHED,
+       message: `Process exited immediately with code ${output.exitCode}${stderrInfo}`,
+     };
+   }
 
     // Update session state
     session.ended = true;
@@ -130,6 +143,102 @@ export class TerminalSessionManager {
     }
 
     return { sessionId, output };
+  }
+
+  /**
+   * Start a new terminal session in background mode (non-blocking).
+   * Returns immediately with just the sessionId, handles process completion asynchronously.
+   */
+  async startSessionBackground(
+    skillName: string,
+    userArgs?: Record<string, string>,
+    customCwd?: string,
+    customTimeout?: number
+  ): Promise<{ sessionId: string }> {
+    // Check max concurrent sessions
+    if (this.sessions.size >= this.config.maxConcurrentSessions) {
+      throw new Error('Maximum concurrent sessions reached');
+    }
+
+    // Get skill
+    const skill = this.skills.get(skillName);
+    if (!skill) {
+      throw {
+        code: TerminalErrorCode.SKILL_NOT_FOUND,
+        message: `Skill '${skillName}' not found`,
+      };
+    }
+
+    // Validate inputs
+    const validation = validateSessionInput(
+      skill.definition,
+      this.config,
+      userArgs,
+      customCwd
+    );
+
+    if (!validation.valid) {
+      throw {
+        code: TerminalErrorCode.INVALID_ARGS,
+        message: validation.invalidCwd
+          ? validation.errors.find((error) => error.startsWith('INVALID_CWD:')) ?? 'INVALID_CWD: invalid cwd'
+          : validation.errors.join('; '),
+      };
+    }
+
+    // Create session ID
+    const sessionId = nanoid(8);
+
+    log.info({ sessionId, skillName }, 'Starting background terminal session');
+
+    // Execute the skill
+    const { process: proc, promise } = executeSkill(
+      skill.definition,
+      this.config,
+      userArgs,
+      customCwd,
+      customTimeout,
+      validation.normalizedCwd
+    );
+
+    // Create session
+    const session: TerminalSession = {
+      id: sessionId,
+      skillName,
+      process: proc,
+      startedAt: Date.now(),
+      lastActivityAt: Date.now(),
+      ended: false,
+      exitCode: null,
+      stdout: [],
+      stderr: [],
+    };
+
+    this.sessions.set(sessionId, session);
+
+    // Handle process completion asynchronously (fire and forget)
+    promise
+      .then((output) => {
+        // Update session state when process completes
+        session.ended = true;
+        session.exitCode = output.exitCode;
+        session.stdout = output.stdout.split('\n').filter(line => line.length > 0);
+        session.stderr = output.stderr.split('\n').filter(line => line.length > 0);
+        log.info({ sessionId, exitCode: output.exitCode }, 'Background session completed');
+      })
+       .catch((err) => {
+         // Handle process errors
+         session.ended = true;
+         session.exitCode = -1;
+         const errorMessage = (err as Error).message;
+         const errorCode = (err as any).code || 'unknown';
+         // CRITICAL: Write to stderr so UI can retrieve the error later
+         session.stderr.push(`ERROR: ${errorMessage} (code: ${errorCode})`);
+         log.error({ sessionId, error: errorMessage }, '[Background Session Error]');
+       });
+
+    // Return immediately with just the sessionId
+    return { sessionId };
   }
 
   /**
@@ -245,6 +354,28 @@ export class TerminalSessionManager {
     }
 
     return result;
+  }
+
+  /**
+   * List all available skill names.
+   */
+  listSkills(): string[] {
+    return Array.from(this.skills.keys());
+  }
+
+  /**
+   * Get all loaded skills with their definitions and environment variables.
+   * 
+   * Purpose: Provides access to the full skills map, including skill-specific
+   * environment variables (e.g., `env.PATH`). The terminal bridge in `src/mcp/opencode.ts`
+   * uses this to extract PATH overrides before gate validation. This ensures that
+   * executables installed in non-standard locations (e.g., `~/.opencode/bin`) are found
+   * by the `which` gate, which checks for command existence using the skill's custom PATH.
+   * 
+   * Returns: Full Map of skill names to loaded skill objects (definition + env).
+   */
+  getSkills(): Map<string, LoadedSkill> {
+    return this.skills;
   }
 
   /**

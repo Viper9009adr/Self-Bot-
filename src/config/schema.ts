@@ -135,6 +135,14 @@ export const ConfigSchema = z.object({
     perUserConcurrency: z.coerce.number().int().min(1).default(2),
   }),
 
+  // ── Migration Compatibility Flags ─────────────────────────────────────────
+  migration: z
+    .object({
+      adapterBoundary: z.coerce.boolean().default(false),
+      mobileRuntime: z.coerce.boolean().default(false),
+    })
+    .default({}),
+
   // ── Access Control ────────────────────────────────────────────────────────
   access: z.object({
     ownerUserId: z
@@ -190,6 +198,7 @@ export const ConfigSchema = z.object({
     skillsPath: z.string().default('./terminal-skills'),
     commandAllowlist: z.array(z.string()).default(['opencode', 'claude', 'codex', 'git']),
     cwdAllowlist: z.array(z.string()).default(['/home', '/tmp']),
+    strictCwdValidation: z.coerce.boolean().default(true),
     envBlocklist: z.array(z.string()).default(['AWS_', 'SECRET_', 'TOKEN_', 'API_KEY']),
     defaultTimeout: z.coerce.number().int().min(1000).default(300000),
     maxConcurrentSessions: z.coerce.number().int().min(1).default(5),

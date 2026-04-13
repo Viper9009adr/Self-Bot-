@@ -34,7 +34,7 @@ const frontmatter = data as Record<string, unknown>;
         type: String(arg.type ?? 'string'),
         required: Boolean(arg.required),
         description: typeof arg.description === 'string' ? arg.description : '',
-        default: typeof arg.default === 'string' ? arg.default : '',
+            default: typeof arg.default === 'string' ? arg.default : undefined,
       };
       argsList.push(skillArg);
     }
@@ -47,6 +47,8 @@ const frontmatter = data as Record<string, unknown>;
       envObj[k] = String(v);
     }
   }
+
+  log.info({ envObj, rawEnv: frontmatter.env }, 'Loaded skill env');
 
   // Build skill definition
   const definition: SkillDefinition = {
@@ -68,7 +70,38 @@ const frontmatter = data as Record<string, unknown>;
     timeout: typeof frontmatter.timeout === 'number'
       ? frontmatter.timeout
       : 0,
+    requiresShellMode: frontmatter.requiresShellMode === true ? true : false,
   };
+
+   // Parse shellQuoting rules from YAML frontmatter
+   // Rules are position-based: each rule specifies whether an argument at a given
+   // position should be quoted or not. Supports positive indices (0, 1, 2...) and
+   // negative indices (-1 for last, -2 for second-to-last, etc.).
+   // Load-time validation ensures no duplicate positions are specified.
+   if (frontmatter.shellQuoting && typeof frontmatter.shellQuoting === 'object') {
+    const sq = frontmatter.shellQuoting as { argRules?: unknown };
+    if (sq.argRules && Array.isArray(sq.argRules)) {
+      const seenPositions = new Set<number>();
+      const rules = sq.argRules.map((rule: unknown) => {
+        if (typeof rule !== 'object' || rule === null) {
+          throw new Error(`Invalid shellQuoting rule in ${filePath}: rule must be an object`);
+        }
+        const r = rule as { position?: unknown; quote?: unknown };
+        if (typeof r.position !== 'number') {
+          throw new Error(`Invalid shellQuoting rule in ${filePath}: position must be a number`);
+        }
+        if (seenPositions.has(r.position)) {
+          throw new Error(`Duplicate position ${r.position} in shellQuoting rules for skill ${name}`);
+        }
+        seenPositions.add(r.position);
+        return {
+          position: r.position,
+          quote: r.quote === true
+        };
+      });
+      definition.shellQuoting = { argRules: rules };
+    }
+  }
 
   // Validate the skill definition
   const validation = validateSkillDefinition(definition);

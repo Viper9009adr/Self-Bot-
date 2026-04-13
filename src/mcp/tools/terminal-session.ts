@@ -47,10 +47,13 @@ export class TerminalSessionTool extends BaseTool<TerminalSessionInput> {
         skillsPath: config.terminal.skillsPath,
         commandAllowlist: config.terminal.commandAllowlist,
         cwdAllowlist: config.terminal.cwdAllowlist,
+        ...(config.terminal.strictCwdValidation !== undefined
+          ? { strictCwdValidation: config.terminal.strictCwdValidation }
+          : {}),
         envBlocklist: config.terminal.envBlocklist,
         defaultTimeout: config.terminal.defaultTimeout,
         maxConcurrentSessions: config.terminal.maxConcurrentSessions,
-      },
+      } as import('../../terminal/types.js').TerminalConfig & { strictCwdValidation?: boolean },
       skills
     );
 
@@ -65,6 +68,10 @@ export class TerminalSessionTool extends BaseTool<TerminalSessionInput> {
       throw new Error('Terminal session manager not initialized');
     }
     return this.manager;
+  }
+
+  listAvailableSkills(): string[] {
+    return this.getManager().listSkills();
   }
 
   /**
@@ -91,6 +98,10 @@ export class TerminalSessionTool extends BaseTool<TerminalSessionInput> {
     } catch (err) {
       const error = err as { code?: TerminalErrorCode; message?: string };
 
+      if (typeof error.message === 'string' && error.message.startsWith('INVALID_CWD:')) {
+        return this.errorResult(error.message, ToolErrorCode.INVALID_INPUT);
+      }
+
       if (error.code) {
         return this.errorResult(error.message ?? 'Unknown error', this.mapErrorCode(error.code));
       }
@@ -107,6 +118,30 @@ export class TerminalSessionTool extends BaseTool<TerminalSessionInput> {
       return this.errorResult('skillName is required for start action', ToolErrorCode.INVALID_INPUT);
     }
 
+    // Use background mode for opencode skill to avoid blocking the bot
+    if (input.skillName === 'opencode') {
+      const result = await manager.startSessionBackground(
+        input.skillName,
+        input.args,
+        input.cwd,
+        input.timeout
+      );
+
+      const output = {
+        action: 'start',
+        success: true,
+        sessionId: result.sessionId,
+        message: 'OpenCode session started in background. Use the "output" action with this sessionId to check results later.',
+      };
+
+      return {
+        success: true,
+        data: output as JsonObject,
+        summary: `Session ${result.sessionId} started in background (opencode)`,
+      };
+    }
+
+    // Use blocking mode for other skills
     const result = await manager.startSession(
       input.skillName,
       input.args,
@@ -213,17 +248,19 @@ const success = manager.input(input.sessionId, input.input);
    */
   private handleList(manager: TerminalSessionManager): ToolResult {
     const sessions = manager.listSessions();
+    const skills = manager.listSkills();
 
     const output = {
       action: 'list',
       success: true,
       sessions,
+      availableSkills: skills,
     };
 
     return {
       success: true,
       data: output as JsonObject,
-      summary: `Listed ${sessions.length} session(s)`,
+      summary: `Listed ${sessions.length} session(s), ${skills.length} skill(s) available`,
     };
   }
 

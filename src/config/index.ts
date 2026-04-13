@@ -11,6 +11,19 @@ loadDotenv();
 
 const log = getLogger().child({ module: 'config' });
 
+/**
+ * Sanitize a comma-separated env value into an array.
+ * Strips backticks, surrounding quotes, and whitespace.
+ */
+function sanitizeList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  return value
+    .replace(/[`'"]/g, '') // Remove backticks and quotes
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+
 function buildRawConfig(): Record<string, unknown> {
   return {
     nodeEnv: process.env['NODE_ENV'],
@@ -76,6 +89,11 @@ function buildRawConfig(): Record<string, unknown> {
       perUserConcurrency: process.env['QUEUE_PER_USER_CONCURRENCY'],
     },
 
+    migration: {
+      adapterBoundary: process.env['MIGRATION_ADAPTER_BOUNDARY'],
+      mobileRuntime: process.env['MIGRATION_MOBILE_RUNTIME'],
+    },
+
     access: {
       ownerUserId: process.env['BOT_OWNER_ID'],
       allowlistPath: process.env['ALLOWLIST_PATH'],
@@ -126,15 +144,10 @@ function buildRawConfig(): Record<string, unknown> {
   // Terminal configuration
   terminal: {
     skillsPath: process.env['TERMINAL_SKILLS_PATH'],
-    commandAllowlist: process.env['TERMINAL_COMMAND_ALLOWLIST']
-      ? process.env['TERMINAL_COMMAND_ALLOWLIST'].split(',').map(s => s.trim())
-      : undefined,
-    cwdAllowlist: process.env['TERMINAL_CWD_ALLOWLIST']
-      ? process.env['TERMINAL_CWD_ALLOWLIST'].split(',').map(s => s.trim())
-      : undefined,
-    envBlocklist: process.env['TERMINAL_ENV_BLOCKLIST']
-      ? process.env['TERMINAL_ENV_BLOCKLIST'].split(',').map(s => s.trim())
-      : undefined,
+    commandAllowlist: sanitizeList(process.env['TERMINAL_COMMAND_ALLOWLIST']),
+    cwdAllowlist: sanitizeList(process.env['TERMINAL_CWD_ALLOWLIST']),
+    strictCwdValidation: process.env['TERMINAL_STRICT_CWD_VALIDATION'],
+    envBlocklist: sanitizeList(process.env['TERMINAL_ENV_BLOCKLIST']),
     defaultTimeout: process.env['TERMINAL_DEFAULT_TIMEOUT'],
     maxConcurrentSessions: process.env['TERMINAL_MAX_CONCURRENT_SESSIONS'],
   },

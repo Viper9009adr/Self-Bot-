@@ -21,6 +21,6 @@
     "noEmit": true,
     "types": ["bun-types", "node"]
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": ["src/**/*", "tests/**/*", "backend/**/*", "backend/apps/shared/**/*"],
   "exclude": ["node_modules", "dist", "browser-worker"]
 }

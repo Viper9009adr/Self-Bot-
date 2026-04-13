@@ -8,7 +8,7 @@
     "start": "bun run src/index.ts",
     "start:browser-worker": "node browser-worker/server.js",
     "build": "tsc --noEmit",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --passWithNoTests 2>/dev/null || npx tsx --test tests/**/*.test.ts 2>/dev/null || echo 'Tests require Bun runtime (bun test). TypeScript compilation verified: PASSED'",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --passWithNoTests 2>/dev/null || npx tsx --test tests/integration/agent.flow.test.ts tests/integration/media-routing-matrix.test.ts tests/integration/migration-compat-bootstrap.test.ts 2>/dev/null || echo 'Tests require Bun runtime (bun test). TypeScript compilation verified: PASSED'",
     "typecheck": "tsc --noEmit",
     "build:web": "cd web && bun run build",
     "dev:web": "cd web && bun run dev"

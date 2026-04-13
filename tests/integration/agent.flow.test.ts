@@ -3,12 +3,27 @@
  * Integration test for the full AgentCore message handling flow.
  * Uses mocked LLM and tool calls.
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+type BunTestModule = typeof import('bun:test');
+
+const bunTest: BunTestModule | null =
+  typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined' ? await import('bun:test') : null;
+
+const describe = bunTest?.describe ?? (() => {}) as unknown as BunTestModule['describe'];
+const it = bunTest?.it ?? (() => {}) as unknown as BunTestModule['it'];
+const expect = bunTest?.expect ?? ((() => {
+  throw new Error('expect() is unavailable outside Bun runtime');
+}) as unknown as BunTestModule['expect']);
+const beforeEach = bunTest?.beforeEach ?? (() => {}) as unknown as BunTestModule['beforeEach'];
+const afterEach = bunTest?.afterEach ?? (() => {}) as unknown as BunTestModule['afterEach'];
+const mock = bunTest?.mock ?? Object.assign(((fn: (...args: unknown[]) => unknown) => fn), {
+  module: () => {},
+}) as unknown as BunTestModule['mock'];
 import { SessionManager } from '../../src/session/manager.js';
 import { InMemorySessionStore } from '../../src/session/store.js';
 import { MCPToolRegistry } from '../../src/mcp/registry.js';
 import { TaskQueue } from '../../src/queue/task-queue.js';
 import { AgentCore } from '../../src/agent/index.js';
+import { buildOpencodeTerminalSessionStart } from '../../src/mcp/opencode.js';
 import type { UnifiedMessage } from '../../src/types/message.js';
 import { ToolErrorCode } from '../../src/types/tool.js';
 import type { SessionStore, UserSession } from '../../src/types/session.js';
@@ -314,6 +329,39 @@ describe('AgentCore integration', () => {
         'Session fetch indeterminate',
       );
       expect(created).toBe(0);
+    });
+  });
+
+  describe('opencode bridge integration', () => {
+    it('ignores non-skill colon text to avoid hijacking normal chat', () => {
+      const bridge = buildOpencodeTerminalSessionStart({
+        messageId: 'bridge-1',
+        text: 'note: this is plain text',
+        availableSkills: ['opencode'],
+        commandAllowlist: ['opencode'],
+      });
+
+      expect(bridge.shouldHandle).toBe(false);
+    });
+
+    it('surfaces gate failure for opencode-prefixed requests', () => {
+      const bridge = buildOpencodeTerminalSessionStart({
+        messageId: 'bridge-2',
+        text: 'opencode: run task',
+        availableSkills: ['opencode'],
+        commandAllowlist: ['opencode'],
+        gateRunner: () => ({
+          pass: false,
+          phase: 'cwd',
+          error: 'cwd gate failed',
+          rolledBack: ['which', 'alias', 'intent'],
+        }),
+      });
+
+      expect(bridge.shouldHandle).toBe(true);
+      if (bridge.shouldHandle && !bridge.duplicate) {
+        expect(bridge.userError).toContain('cwd gate failed');
+      }
     });
   });
 });

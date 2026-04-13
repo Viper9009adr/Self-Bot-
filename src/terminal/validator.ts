@@ -4,7 +4,13 @@
  */
 
 import * as path from 'node:path';
+import { statSync } from 'node:fs';
 import type { SkillDefinition, ValidationResult, TerminalConfig } from './types.js';
+
+type SessionValidationResult = ValidationResult & {
+  normalizedCwd: string;
+  invalidCwd: boolean;
+};
 
 /**
  * Validate a skill definition.
@@ -44,6 +50,24 @@ export function validateSkillDefinition(definition: SkillDefinition): Validation
 
 /**
  * Validate a command against the allowlist.
+ *
+ * Extracts the base command name (first word) from the input string and checks if it
+ * exists in the allowlist using exact matching (case-sensitive).
+ *
+ * Args:
+ *   command: Command string to validate (may contain arguments)
+ *   allowlist: Array of allowed command names (e.g., ['opencode', 'claude', 'git'])
+ *
+ * Returns:
+ *   ValidationResult with `valid: true` if the base command is in the allowlist,
+ *   or `valid: false` with an error message listing the command and allowed options.
+ *
+ * Example:
+ *   validateCommand('opencode --yes', ['opencode', 'git'])
+ *   => { valid: true, errors: [] }
+ *
+ *   validateCommand('rm -rf /', ['opencode', 'git'])
+ *   => { valid: false, errors: ["Command 'rm' is not in the allowlist: [opencode, git]"] }
  */
 export function validateCommand(
   command: string,
@@ -52,7 +76,7 @@ export function validateCommand(
   const errors: string[] = [];
 
   // Extract base command (first word)
-  const baseCommand = command.trim().split(/\s+/)[0] ?? '';
+  const baseCommand = path.basename(command.trim().split(/\s+/)[0] ?? '');
 
   // Check if command is in allowlist (exact match)
   if (!allowlist.includes(baseCommand)) {
@@ -69,7 +93,27 @@ export function validateCommand(
 
 /**
  * Validate a working directory against the allowlist.
- * Uses prefix matching after resolving the path.
+ *
+ * Uses prefix matching after resolving the path with `path.resolve()`.
+ * Matching is case-sensitive on Linux/Mac and case-insensitive on Windows.
+ *
+ * Args:
+ *   cwd: Working directory path to validate (relative or absolute)
+ *   allowlist: Array of allowed directory prefix paths (e.g., ['/home', '/tmp'])
+ *
+ * Returns:
+ *   ValidationResult with `valid: true` if the resolved path starts with any allowlist prefix,
+ *   or `valid: false` with error messages describing why validation failed:
+ *   - Path not in allowlist
+ *   - Path contains traversal attempt (..)
+ *   - Invalid path format
+ *
+ * Example:
+ *   validateCwd('/home/user/Dev', ['/home', '/tmp'])
+ *   => { valid: true, errors: [] }
+ *
+ *   validateCwd('/var/lib', ['/home', '/tmp'])
+ *   => { valid: false, errors: ["Working directory '/var/lib' is not in the allowlist: [/home, /tmp]"] }
  */
 export function validateCwd(
   cwd: string,
@@ -214,7 +258,7 @@ export function validateSessionInput(
   config: TerminalConfig,
   userArgs?: Record<string, string>,
   customCwd?: string
-): ValidationResult {
+): SessionValidationResult {
   const errors: string[] = [];
 
   // Validate command
@@ -226,6 +270,22 @@ export function validateSessionInput(
   const cwdValidation = validateCwd(cwd, config.cwdAllowlist);
   errors.push(...cwdValidation.errors);
 
+  const normalizedCwd = path.resolve(cwd);
+  const strictCwdValidation = ('strictCwdValidation' in config)
+    ? Boolean((config as TerminalConfig & { strictCwdValidation?: boolean }).strictCwdValidation)
+    : true;
+
+  if (strictCwdValidation) {
+    try {
+      const stats = statSync(normalizedCwd);
+      if (!stats.isDirectory()) {
+        errors.push(`INVALID_CWD: '${normalizedCwd}' is not a directory`);
+      }
+    } catch {
+      errors.push(`INVALID_CWD: '${normalizedCwd}' does not exist`);
+    }
+  }
+
   // Validate arguments
   const argsValidation = validateArgs(userArgs, skill.arguments);
   errors.push(...argsValidation.errors);
@@ -233,5 +293,7 @@ export function validateSessionInput(
   return {
     valid: errors.length === 0,
     errors,
+    normalizedCwd,
+    invalidCwd: errors.some((error) => error.startsWith('INVALID_CWD:')),
   };
 }

@@ -38,6 +38,8 @@ import { SynthesizeSpeechTool } from './mcp/tools/synthesize-speech.js';
 import { ReadPDFTool } from './mcp/tools/read-pdf.js';
 import { CheckPendingTasksTool } from './mcp/tools/check-pending-tasks.js';
 import { TerminalSessionTool } from './mcp/tools/terminal-session.js';
+import { buildOpencodeTerminalSessionStart } from './mcp/opencode.js';
+import type { LoadedSkill } from './terminal/types.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
 import type { FileAttachment } from './types/message.js';
@@ -94,9 +96,14 @@ async function bootstrap(): Promise<void> {
       model: config.llm.model,
       mode: config.telegram.mode,
       sessionStore: config.session.store,
+      migration: config.migration,
     },
     'Configuration loaded',
   );
+
+  if (config.migration.adapterBoundary || config.migration.mobileRuntime) {
+    log.warn({ migration: config.migration }, 'Migration compatibility flags enabled');
+  }
 
   // ── 1a. Media Service ─────────────────────────────────────────────────────
   const mediaService = createMediaService(config);
@@ -307,6 +314,73 @@ async function bootstrap(): Promise<void> {
 
       // Shadow copy to allow text mutation without touching original message reference
       let currentMessage = message;
+
+      if (message.platform.platform === 'telegram') {
+        const manager = terminalSessionTool.getManager();
+        // Extract the loaded skills map (includes custom env vars from skill definitions)
+        // and pass it to the opencode bridge so it can access skill-specific PATH values.
+        // 
+        // Purpose (IMP fix):
+        // The opencode bridge needs the full LoadedSkill objects to extract skill.env.PATH
+        // for gate validation. Without this, the `which` gate cannot find executables in
+        // non-standard locations (e.g., ~/.opencode/bin). By passing skillsMap here,
+        // the bridge can access skill.definition.env.PATH before running gates.
+        const skillsMap = manager?.getSkills() || new Map<string, LoadedSkill>();
+
+        const opencodeBridge = buildOpencodeTerminalSessionStart({
+          messageId: message.id,
+          text: currentMessage.text,
+          availableSkills: terminalSessionTool.listAvailableSkills(),
+          commandAllowlist: config.terminal.commandAllowlist,
+          ...(process.env.PATH !== undefined ? { pathEnv: process.env.PATH } : {}),
+          skillsMap,
+        });
+
+        if (opencodeBridge.shouldHandle) {
+          if (opencodeBridge.duplicate) {
+            childLog.info({ messageId: message.id }, 'Skipping duplicate opencode bridge dispatch');
+            return;
+          }
+
+          if (opencodeBridge.userError) {
+            await adapterRegistry.sendResponse({
+              inReplyTo: message.id,
+              userId: message.userId,
+              conversationId: message.conversationId,
+              text: `⚠️ ${opencodeBridge.userError}`,
+              format: 'text',
+              platform: message.platform,
+            });
+            return;
+          }
+
+          if (opencodeBridge.toolInput) {
+            const bridgeResult = await toolRegistry.execute(
+              'terminal_session',
+              opencodeBridge.toolInput,
+              {
+                userId: message.userId,
+                taskId: `opencode-${message.id}`,
+                conversationId: message.conversationId,
+              },
+            );
+
+            const responseText = bridgeResult.success
+              ? `✅ OpenCode executed via terminal_session.\n${bridgeResult.summary ?? 'Completed.'}`
+              : `⚠️ ${bridgeResult.error ?? 'OpenCode execution failed.'}`;
+
+            await adapterRegistry.sendResponse({
+              inReplyTo: message.id,
+              userId: message.userId,
+              conversationId: message.conversationId,
+              text: responseText,
+              format: 'text',
+              platform: message.platform,
+            });
+            return;
+          }
+        }
+      }
 
       // Fetch Telegram image attachments (populate .data field for vision)
       if (message.platform.platform === 'telegram') {

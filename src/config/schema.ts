@@ -114,6 +114,7 @@ export const ConfigSchema = z.object({
   // ── Redis ─────────────────────────────────────────────────────────────────
   redis: z.object({
     url: z.string().default('redis://localhost:6379'),
+    disableTtl: z.coerce.boolean().default(false),
   }),
 
   // ── MCP ───────────────────────────────────────────────────────────────────

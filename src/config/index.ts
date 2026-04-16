@@ -71,6 +71,7 @@ function buildRawConfig(): Record<string, unknown> {
 
     redis: {
       url: process.env['REDIS_URL'],
+      disableTtl: process.env['REDIS_DISABLE_TTL'],
     },
 
     mcp: {

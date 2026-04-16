@@ -88,6 +88,18 @@ export class NvidiaNIMMediaService implements IMediaService {
     }
   }
 
+  /**
+   * Parses NVIDIA NIM API response into a GeneratedImage.
+   *
+   * Supports three response formats:
+   * 1. `{ images: [{ b64_json: "..." }] }` - Standard format with optional revised_prompt
+   * 2. `{ artifacts: [{ b64_json: "..." | base64: "..." }] }` - Alternative format (base64 or b64_json)
+   * 3. `{ image: "base64..." }` - Simple single-image format
+   *
+   * @param json - The parsed JSON response from NVIDIA NIM API
+   * @returns GeneratedImage with decoded base64 data
+   * @throws Error if the response format is unrecognized
+   */
   private parseResponse(json: Record<string, unknown>): GeneratedImage {
     // Format 1: { images: [{ b64_json: "..." }] }
     if (json.images && Array.isArray(json.images) && json.images.length > 0) {
@@ -105,7 +117,19 @@ export class NvidiaNIMMediaService implements IMediaService {
       }
     }
 
-    // Format 2: { image: "base64..." }
+    // Format 2: { artifacts: [{ b64_json: "..." | base64: "..." }] }
+    if (json.artifacts && Array.isArray(json.artifacts) && json.artifacts.length > 0) {
+      const artifact = json.artifacts[0] as Record<string, unknown>;
+      const base64String = (artifact.b64_json as string) || (artifact.base64 as string);
+      if (base64String && typeof base64String === 'string') {
+        return {
+          data: Buffer.from(base64String, 'base64'),
+          mimeType: 'image/png',
+        };
+      }
+    }
+
+    // Format 3: { image: "base64..." }
     if (json.image && typeof json.image === 'string') {
       return {
         data: Buffer.from(json.image, 'base64'),

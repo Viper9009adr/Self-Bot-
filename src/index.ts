@@ -13,6 +13,7 @@ import { WhatsAppAdapter } from './adapters/whatsapp/index.js';
 import { WebAdapter } from './adapters/website/index.js';
 import { MCPToolRegistry } from './mcp/registry.js';
 import { MCPServer } from './mcp/server.js';
+import { MCPClient } from './mcp/client.js';
 import { TaskQueue } from './queue/task-queue.js';
 import { AgentCore } from './agent/index.js';
 import { ProgressReporter } from './agent/progress-reporter.js';
@@ -39,6 +40,10 @@ import { ReadPDFTool } from './mcp/tools/read-pdf.js';
 import { CheckPendingTasksTool } from './mcp/tools/check-pending-tasks.js';
 import { TerminalSessionTool } from './mcp/tools/terminal-session.js';
 import { buildOpencodeTerminalSessionStart } from './mcp/opencode.js';
+import { RetrievalRouter } from './memory/retrievalRouter.js';
+import { ContextInjector } from './context/contextInjector.js';
+import { MeridianSemanticRetriever } from './meridian/semanticRetriever.js';
+import { MeridianDeterministicRetriever } from './meridian/deterministicRetriever.js';
 import type { LoadedSkill } from './terminal/types.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
@@ -150,6 +155,7 @@ async function bootstrap(): Promise<void> {
   const sessionStore = await createSessionStore(config.session.store, {
     ttlSeconds: config.session.ttlSeconds,
     redisUrl: config.redis.url,
+    redisDisableTtl: config.redis.disableTtl,
     ...(config.session.meridianUrl !== undefined
       ? { meridianUrl: config.session.meridianUrl }
       : {}),
@@ -205,6 +211,30 @@ async function bootstrap(): Promise<void> {
   await remoteMCPLoader.load();
   shutdown.register(async () => await remoteMCPLoader.dispose());
 
+  // ── 4c. Optional Meridian context retrieval (RAG) ───────────────────────
+  let contextInjector: ContextInjector | undefined;
+  if (config.session.meridianUrl) {
+    const retrievalClient = new MCPClient({
+      serverUrl: config.session.meridianUrl,
+      clientName: 'self-bot-memory-retriever',
+    });
+
+    try {
+      await retrievalClient.connect();
+      const deterministicRetriever = new MeridianDeterministicRetriever(retrievalClient);
+      const semanticRetriever = new MeridianSemanticRetriever(retrievalClient);
+      const retrievalRouter = new RetrievalRouter(deterministicRetriever, semanticRetriever);
+      contextInjector = new ContextInjector(retrievalRouter);
+      log.info({ meridianUrl: config.session.meridianUrl }, 'Meridian context retrieval enabled');
+
+      shutdown.register(async () => {
+        await retrievalClient.disconnect();
+      });
+    } catch (err) {
+      log.warn({ err, meridianUrl: config.session.meridianUrl }, 'Meridian context retrieval unavailable; continuing without RAG context injection');
+    }
+  }
+
   // ── 5. Agent Core ─────────────────────────────────────────────────────────
   const agent = new AgentCore({
     config,
@@ -213,6 +243,7 @@ async function bootstrap(): Promise<void> {
     taskQueue,
     oauthManager,
     mediaService: mediaService ?? undefined,
+    contextInjector,
   });
 
   // ── 6. MCP Server ─────────────────────────────────────────────────────────

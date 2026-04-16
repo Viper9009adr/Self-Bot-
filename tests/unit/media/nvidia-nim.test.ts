@@ -108,6 +108,40 @@ describe('NvidiaNIMMediaService', () => {
       expect(result.mimeType).toBe('image/png');
     });
 
+    it('parses { artifacts: [{ base64: "..." }] } response format', async () => {
+      const b64 = Buffer.from('artifacts-format-test').toString('base64');
+      globalThis.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ artifacts: [{ base64: b64 }] }),
+          headers: new Headers(),
+        }),
+      ) as unknown as typeof fetch;
+
+      const service = createService();
+      const result = await service.generateImage('test');
+
+      expect(result.data).toBeDefined();
+      expect(result.mimeType).toBe('image/png');
+    });
+
+    it('parses { artifacts: [{ b64_json: "..." }] } response format', async () => {
+      const b64 = Buffer.from('artifacts-b64-json-test').toString('base64');
+      globalThis.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ artifacts: [{ b64_json: b64 }] }),
+          headers: new Headers(),
+        }),
+      ) as unknown as typeof fetch;
+
+      const service = createService();
+      const result = await service.generateImage('test');
+
+      expect(result.data).toBeDefined();
+      expect(result.mimeType).toBe('image/png');
+    });
+
     it('throws on unrecognized response format', async () => {
       globalThis.fetch = mock(() =>
         Promise.resolve({

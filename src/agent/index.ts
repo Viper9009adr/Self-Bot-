@@ -16,6 +16,7 @@ import { ConversationMemory } from './memory.js';
 import { CoTPromptBuilder } from './cot.js';
 import { createLLMModel } from './llm.js';
 import { stripCoTBlocks } from './format.js';
+import type { ContextInjector } from '../context/contextInjector.js';
 import { childLogger } from '../utils/logger.js';
 import { AgentError, normalizeError } from '../utils/errors.js';
 import { nanoid } from 'nanoid';
@@ -46,6 +47,7 @@ export interface AgentCoreOptions {
   taskQueue: TaskQueue;
   oauthManager?: OAuthManager | undefined;
   mediaService?: IMediaService | undefined;
+  contextInjector?: ContextInjector | undefined;
 }
 
 export interface AgentResponse {
@@ -80,6 +82,7 @@ export class AgentCore {
   /** Pre-built model for non-OAuth providers. Undefined for claude-oauth (built per-request). */
   private readonly model: ReturnType<typeof createLLMModel> | undefined;
   private readonly mediaService: IMediaService | undefined;
+  private readonly contextInjector: ContextInjector | undefined;
 
   constructor(options: AgentCoreOptions) {
     this.config = options.config;
@@ -88,6 +91,7 @@ export class AgentCore {
     this.taskQueue = options.taskQueue;
     this.oauthManager = options.oauthManager;
     this.mediaService = options.mediaService;
+    this.contextInjector = options.contextInjector;
 
     const extra = options.config.agent.systemPromptExtra || undefined;
     this.cotBuilder = new CoTPromptBuilder({
@@ -194,6 +198,26 @@ export class AgentCore {
         // Tool messages require specific format
         return { role: 'assistant' as const, content: m.content };
       });
+
+      if (this.contextInjector && message.text.trim().length > 0) {
+        const injected = await this.contextInjector.inject({
+          text: message.text,
+          tenantId: 'self-bot',
+          userId: message.userId,
+          conversationId: message.conversationId,
+          sessionId: message.conversationId,
+          taskId: message.conversationId,
+        });
+
+        if (injected.snippets.some((snippet) => snippet.trim().length > 0)) {
+          const contextBlock = this.buildRetrievedContextBlock(injected.retrievalMode, injected.snippets);
+          coreMessages.unshift({ role: 'system', content: contextBlock });
+          childLog.debug({
+            retrievalMode: injected.retrievalMode,
+            snippetCount: injected.snippets.length,
+          }, 'Injected Meridian retrieval context');
+        }
+      }
 
       // Multimodal: inject image content parts if vision-capable provider and images present
       const visionEnabled = VISION_PROVIDERS.has(this.config.llm.provider);
@@ -450,6 +474,19 @@ export class AgentCore {
       // Always remove active task tracking
       await this.sessionManager.removeActiveTask(message.userId, taskId);
     }
+  }
+
+  private buildRetrievedContextBlock(retrievalMode: 'det' | 'sem' | 'fallback', snippets: string[]): string {
+    const maxSnippets = 5;
+    const limited = snippets.slice(0, maxSnippets).map((snippet) => snippet.trim()).filter((snippet) => snippet.length > 0);
+    const body = limited.map((snippet, idx) => `[${idx + 1}] ${snippet}`).join('\n\n');
+
+    return [
+      'Retrieved conversation context (lineage scoped):',
+      `mode=${retrievalMode}`,
+      body,
+      'Use this only as supporting context. Prefer the user\'s latest message when there is conflict.',
+    ].join('\n\n');
   }
 
   /**

@@ -98,10 +98,12 @@ export class RedisSessionStore implements SessionStore {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private client: any | null = null;
   private readonly ttlSeconds: number;
+  private readonly disableTtl: boolean;
   private readonly keyPrefix = 'self-bot:session:';
 
-  constructor(redisUrl: string, ttlSeconds = 3600) {
+  constructor(redisUrl: string, ttlSeconds = 3600, disableTtl = false) {
     this.ttlSeconds = ttlSeconds;
+    this.disableTtl = disableTtl;
     this.initClient(redisUrl);
   }
 
@@ -149,12 +151,16 @@ export class RedisSessionStore implements SessionStore {
   async set(userId: string, session: UserSession): Promise<void> {
     this.ensureClient();
     try {
-      await this.client.set(
-        this.key(userId),
-        JSON.stringify(session),
-        'EX',
-        this.ttlSeconds,
-      );
+      if (this.disableTtl) {
+        await this.client.set(this.key(userId), JSON.stringify(session));
+      } else {
+        await this.client.set(
+          this.key(userId),
+          JSON.stringify(session),
+          'EX',
+          this.ttlSeconds,
+        );
+      }
     } catch (err) {
       log.error({ err, userId }, 'Redis set failed');
       throw new SessionError(`Failed to save session for ${userId}`);
@@ -202,6 +208,7 @@ export class RedisSessionStore implements SessionStore {
  *                  lost on process restart. Default when `SESSION_STORE` is unset.
  * - `'redis'`    — `RedisSessionStore`. Requires a running Redis instance.
  *                  Pass `redisUrl` (defaults to `redis://localhost:6379`).
+ *                  Set `redisDisableTtl=true` to disable key expiration.
  * - `'meridian'` — `MeridianSessionStore`. Persists sessions to a Meridian MCP
  *                  server. Requires `meridianUrl` (`MERIDIAN_SESSION_URL` env var).
  *                  Throws if `meridianUrl` is absent. Gracefully degrades to an
@@ -212,13 +219,14 @@ export class RedisSessionStore implements SessionStore {
  * @param options - Backend-specific configuration.
  * @param options.ttlSeconds   - Session TTL in seconds (default: 3600).
  * @param options.redisUrl     - Redis connection string (redis type only).
+ * @param options.redisDisableTtl - Disable Redis key expiration (redis type only).
  * @param options.meridianUrl  - Meridian MCP server base URL (meridian type only).
  * @returns A ready-to-use `SessionStore` instance.
  * @throws {Error} When `type === 'meridian'` and `options.meridianUrl` is not provided.
  */
 export async function createSessionStore(
   type: 'memory' | 'redis' | 'meridian',
-  options: { ttlSeconds?: number; redisUrl?: string; meridianUrl?: string } = {},
+  options: { ttlSeconds?: number; redisUrl?: string; redisDisableTtl?: boolean; meridianUrl?: string } = {},
 ): Promise<SessionStore> {
   if (type === 'meridian') {
     const url = options.meridianUrl;
@@ -234,7 +242,7 @@ export async function createSessionStore(
 
   if (type === 'redis') {
     const url = options.redisUrl ?? 'redis://localhost:6379';
-    return new RedisSessionStore(url, options.ttlSeconds);
+    return new RedisSessionStore(url, options.ttlSeconds, options.redisDisableTtl ?? false);
   }
   return new InMemorySessionStore(options.ttlSeconds);
 }

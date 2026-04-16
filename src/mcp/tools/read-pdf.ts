@@ -1,6 +1,14 @@
 /**
  * src/mcp/tools/read-pdf.ts
- * MCP tool: extract text from PDF and convert to speech.
+ * MCP tool: extract text from a base64 PDF and optionally synthesize speech.
+ *
+ * Input normalization strips data-URI prefixes and whitespace before
+ * decoding so all accepted base64 forms are handled consistently.
+ * Validation then classifies unsupported non-PDF payloads (including PK/ZIP
+ * containers) before enforcing decoded-byte size limits.
+ *
+ * PDF header detection is tolerant of UTF-8 BOM/leading preamble content by
+ * searching for `%PDF` within the first 1KB of decoded bytes.
  */
 import { z } from 'zod';
 import pdf from 'pdf-parse';
@@ -42,17 +50,51 @@ function sanitizeText(text: string): string {
 }
 
 /**
- * Calculate byte size from base64 string.
+ * Normalize PDF base64 by stripping optional data URI and whitespace.
+ *
+ * This ensures decoded-byte validation and signature detection run on the
+ * same canonical payload regardless of transport formatting.
  */
-function base64ToByteSize(base64: string): number {
-  // Base64 encodes 3 bytes into 4 characters, accounting for padding
-  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
-  return (base64.length * 3) / 4 - padding;
+function normalizePdfBase64(input: string): string {
+  const compact = input.replace(/\s+/g, '');
+  return compact.replace(/^data:[^;]+;base64,/i, '');
+}
+
+const PDF_SIGNATURE = Buffer.from('%PDF', 'ascii');
+const ZIP_SIGNATURE = Buffer.from('PK', 'ascii');
+const PDF_HEADER_SEARCH_LIMIT_BYTES = 1024;
+
+/**
+ * Find `%PDF` within first 1KB to allow BOM/preamble bytes.
+ */
+function findPdfSignatureOffset(buffer: Buffer): number {
+  const maxStart = Math.min(buffer.length - PDF_SIGNATURE.length, PDF_HEADER_SEARCH_LIMIT_BYTES - PDF_SIGNATURE.length);
+  for (let i = 0; i <= maxStart; i += 1) {
+    if (
+      buffer[i] === PDF_SIGNATURE[0]
+      && buffer[i + 1] === PDF_SIGNATURE[1]
+      && buffer[i + 2] === PDF_SIGNATURE[2]
+      && buffer[i + 3] === PDF_SIGNATURE[3]
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Detect ZIP/container signatures (e.g., Office files) by PK marker.
+ */
+function hasPkContainerSignature(buffer: Buffer): boolean {
+  return buffer.length >= ZIP_SIGNATURE.length
+    && buffer[0] === ZIP_SIGNATURE[0]
+    && buffer[1] === ZIP_SIGNATURE[1];
 }
 
 // Size limits
-const MIN_PDF_SIZE_BYTES = 1 * 1024; // 1kB
+const MIN_PDF_SIZE_BYTES = 1 * 1024; // 1KB
 const MAX_PDF_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
+const MIN_PDF_SIZE_KB = MIN_PDF_SIZE_BYTES / 1024;
 
 // TTS chunk size
 const TTS_CHUNK_SIZE = 3500;
@@ -67,21 +109,61 @@ export class ReadPDFTool extends BaseTool<Input> {
   /**
    * Execute the PDF reading and text-to-speech operation.
    *
-   * Validates file size, extracts text from PDF, sanitizes against prompt injection,
-   * and optionally synthesizes speech from the extracted text.
+   * Normalizes the incoming base64 payload, validates PDF size boundaries
+   * (minimum 1KB, maximum 100MB), classifies non-PDF inputs (including
+   * PK/ZIP container payloads), extracts text, sanitizes against prompt
+   * injection patterns, and optionally synthesizes speech.
    *
    * @param input - Validated input containing base64-encoded PDF and optional maxPages
    * @param context - Tool execution context including callback for audio delivery
    * @returns ToolResult with extracted text metadata or audio delivery confirmation
    */
   protected async run(input: Input, context: ToolContext): Promise<ToolResult> {
-    // Validate file size
-    const byteSize = base64ToByteSize(input.pdfBase64);
+    const normalizedPdfBase64 = normalizePdfBase64(input.pdfBase64);
+
+    // Decode base64 to buffer
+    let pdfBuffer: Buffer;
+    try {
+      pdfBuffer = Buffer.from(normalizedPdfBase64, 'base64');
+    } catch (err) {
+      return {
+        success: false,
+        data: null,
+        error: 'Invalid base64 PDF data',
+        errorCode: ToolErrorCode.PARSE_ERROR,
+        durationMs: 0,
+      };
+    }
+
+    // Classify common ZIP/container uploads early (e.g., Office docs).
+    if (hasPkContainerSignature(pdfBuffer)) {
+      return {
+        success: false,
+        data: null,
+        error: 'Unsupported file type: ZIP/container payload detected; expected PDF content',
+        errorCode: ToolErrorCode.INVALID_INPUT,
+        durationMs: 0,
+      };
+    }
+
+    // Allow valid PDFs with BOM/whitespace/preamble before `%PDF` header.
+    if (findPdfSignatureOffset(pdfBuffer) === -1) {
+      return {
+        success: false,
+        data: null,
+        error: 'Unsupported file type: payload does not contain a valid PDF signature',
+        errorCode: ToolErrorCode.INVALID_INPUT,
+        durationMs: 0,
+      };
+    }
+
+    // Validate file size using decoded payload bytes
+    const byteSize = pdfBuffer.length;
     if (byteSize < MIN_PDF_SIZE_BYTES) {
       return {
         success: false,
         data: null,
-        error: `PDF file too small. Minimum size is 1KB, got ${(byteSize / 1024).toFixed(2)}KB.`,
+        error: `PDF file too small. Minimum size is ${MIN_PDF_SIZE_KB}KB, got ${(byteSize / 1024).toFixed(2)}KB.`,
         errorCode: ToolErrorCode.INVALID_INPUT,
         durationMs: 0,
       };
@@ -92,20 +174,6 @@ export class ReadPDFTool extends BaseTool<Input> {
         data: null,
         error: `PDF file too large. Maximum size is 100MB, got ${(byteSize / 1024 / 1024).toFixed(2)}MB.`,
         errorCode: ToolErrorCode.INVALID_INPUT,
-        durationMs: 0,
-      };
-    }
-
-    // Decode base64 to buffer
-    let pdfBuffer: Buffer;
-    try {
-      pdfBuffer = Buffer.from(input.pdfBase64, 'base64');
-    } catch (err) {
-      return {
-        success: false,
-        data: null,
-        error: 'Invalid base64 PDF data',
-        errorCode: ToolErrorCode.PARSE_ERROR,
         durationMs: 0,
       };
     }

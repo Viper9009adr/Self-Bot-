@@ -91,7 +91,7 @@ The AI assistant can use these tools out of the box:
 | **Image Generation** | Generate images from text prompts (OpenAI DALL-E / gpt-image-1 / NVIDIA NIM) |
 | **Text-to-Speech** | Convert text responses to voice messages |
 | **Speech-to-Text** | Transcribe voice messages and audio files |
-| **PDF Reader** | Extract text from PDF attachments, with prompt injection protection |
+| **PDF Reader** | Extract text from PDF attachments with base64 normalization (data URI + whitespace), decoded-byte validation (1KB-100MB), PK/ZIP non-PDF classification, BOM/preamble-tolerant `%PDF` detection (first 1KB), and prompt injection protection |
 | **Terminal Sessions** | Run CLI tools (OpenCode, git, etc.) with skill definitions, security gates, and output capture |
 
 ---
@@ -153,6 +153,8 @@ WA_OWNER_NUMBER=15551234567   # International format, no +
 | In-memory | `memory` (default) | Fast, ephemeral — lost on restart |
 | Redis | `redis` | Persistent, requires `REDIS_URL` |
 | Meridian | `meridian` | Persistent via MCP server, requires `MERIDIAN_SESSION_URL` |
+
+For Redis, sessions use TTL expiration by default (`SESSION_TTL_SECONDS`). Set `REDIS_DISABLE_TTL=true` to keep Redis sessions without expiration.
 
 ---
 

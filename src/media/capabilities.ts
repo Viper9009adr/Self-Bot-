@@ -5,12 +5,12 @@
 import type { Config } from '../config/index.js';
 
 export type MediaCapability = 'image' | 'stt' | 'tts';
-export type MediaRouteTarget = 'local' | 'openai' | 'nvidia-nim' | 'unavailable';
+export type MediaRouteTarget = 'local' | 'openai' | 'nvidia-nim' | 'comfyui' | 'unavailable';
 
 export const MEDIA_CAPABILITY_UNAVAILABLE_CODE = 'MEDIA_CAPABILITY_UNAVAILABLE' as const;
 
 export const MEDIA_CAPABILITY_UNAVAILABLE_MESSAGES: Record<MediaCapability, string> = {
-  image: 'Image capability not configured. Set LOCAL_IMAGE_URL or OPENAI_API_KEY.',
+  image: 'Image capability not configured. Set LOCAL_COMFYUI_URL, LOCAL_IMAGE_URL, or OPENAI_API_KEY.',
   stt: 'STT capability not configured. Set LOCAL_STT_URL or OPENAI_API_KEY.',
   tts: 'TTS capability not configured. Set LOCAL_TTS_URL or OPENAI_API_KEY and MEDIA_TTS_ENABLED=true.',
 };

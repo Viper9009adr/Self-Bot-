@@ -54,6 +54,7 @@ function buildRawConfig(): Record<string, unknown> {
       localSttUrl: process.env['LOCAL_STT_URL'],
       localTtsUrl: process.env['LOCAL_TTS_URL'],
       localImageUrl: process.env['LOCAL_IMAGE_URL'],
+      localComfyuiUrl: process.env['LOCAL_COMFYUI_URL'],
     },
 
     agent: {
@@ -129,7 +130,7 @@ function buildRawConfig(): Record<string, unknown> {
 // Conditionally include media block only when at least one MEDIA var is set
   ...(process.env['MEDIA_IMAGE_MODEL'] || process.env['MEDIA_STT_MODEL'] ||
   process.env['MEDIA_TTS_MODEL'] || process.env['MEDIA_TTS_ENABLED'] ||
-  process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'] ? {
+  process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'] || process.env['COMFYUI_WORKFLOW_PATH'] ? {
     media: {
       imageModel: process.env['MEDIA_IMAGE_MODEL'],
       sttModel: process.env['MEDIA_STT_MODEL'],
@@ -139,6 +140,7 @@ function buildRawConfig(): Record<string, unknown> {
       imageSize: process.env['MEDIA_IMAGE_SIZE'],
       imageQuality: process.env['MEDIA_IMAGE_QUALITY'],
       nvidiaNimImageModel: process.env['MEDIA_NVIDIA_NIM_IMAGE_MODEL'],
+      comfyuiWorkflowPath: process.env['COMFYUI_WORKFLOW_PATH'],
     },
   } : {}),
 

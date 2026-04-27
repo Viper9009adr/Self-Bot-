@@ -38,6 +38,8 @@ export interface ImageGenOptions {
   steps?: number;
   /** @nim-only NVIDIA NIM: Negative prompt to avoid */
   negative_prompt?: string;
+  /** Callback for progress updates during generation (e.g. ComfyUI step progress). */
+  onProgress?: (status: string) => Promise<void>;
 }
 
 export interface ImageEditOptions {

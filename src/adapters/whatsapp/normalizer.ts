@@ -12,6 +12,8 @@ const log = childLogger({ module: 'whatsapp:normalizer' });
 /** Extract clean phone number from WA JID (e.g. '14155551234@c.us' → '14155551234') */
 function extractPhone(jid: string): string {
   const raw = jid.split('@')[0] ?? jid;
+  // WhatsApp now uses @lid for privacy. Real number lookup happens elsewhere.
+  // For now, return raw number without + prefix
   return raw.startsWith('+') ? raw.slice(1) : raw;
 }
 

@@ -1,6 +1,6 @@
 /**
  * src/mcp/tools/read-pdf.ts
- * MCP tool: extract text from a base64 PDF and optionally synthesize speech.
+ * MCP tool: extract text from a base64 PDF.
  *
  * Input normalization strips data-URI prefixes and whitespace before
  * decoding so all accepted base64 forms are handled consistently.
@@ -13,14 +13,8 @@
 import { z } from 'zod';
 import pdf from 'pdf-parse';
 import { BaseTool } from './base.js';
-import type { IMediaService } from '../../media/index.js';
 import type { ToolResult, ToolContext } from '../../types/tool.js';
 import { ToolErrorCode } from '../../types/tool.js';
-import {
-  MEDIA_CAPABILITY_UNAVAILABLE_CODE,
-  createMediaCapabilityUnavailableError,
-  isMediaCapabilityUnavailableError,
-} from '../../media/index.js';
 
 const inputSchema = z.object({
   pdfBase64: z.string().min(1).describe('Base64-encoded PDF file'),
@@ -96,29 +90,25 @@ const MIN_PDF_SIZE_BYTES = 1 * 1024; // 1KB
 const MAX_PDF_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
 const MIN_PDF_SIZE_KB = MIN_PDF_SIZE_BYTES / 1024;
 
-// TTS chunk size
-const TTS_CHUNK_SIZE = 3500;
-
 export class ReadPDFTool extends BaseTool<Input> {
   readonly name = 'read_pdf';
-  readonly description = 'Extract text from a PDF file and convert it to speech delivered as a voice message.';
+  readonly description = 'Extract text from a PDF file. This does not synthesize speech; use synthesize_speech separately when audio is explicitly requested.';
   readonly inputSchema = inputSchema;
 
-  constructor(private readonly mediaService: IMediaService | null) { super(); }
+  constructor() { super(); }
 
   /**
-   * Execute the PDF reading and text-to-speech operation.
+   * Execute PDF text extraction.
    *
    * Normalizes the incoming base64 payload, validates PDF size boundaries
    * (minimum 1KB, maximum 100MB), classifies non-PDF inputs (including
-   * PK/ZIP container payloads), extracts text, sanitizes against prompt
-   * injection patterns, and optionally synthesizes speech.
+   * PK/ZIP container payloads), extracts text, and sanitizes against prompt
+   * injection patterns.
    *
    * @param input - Validated input containing base64-encoded PDF and optional maxPages
-   * @param context - Tool execution context including callback for audio delivery
-   * @returns ToolResult with extracted text metadata or audio delivery confirmation
+   * @returns ToolResult with extracted text and metadata
    */
-  protected async run(input: Input, context: ToolContext): Promise<ToolResult> {
+  protected async run(input: Input, _context: ToolContext): Promise<ToolResult> {
     const normalizedPdfBase64 = normalizePdfBase64(input.pdfBase64);
 
     // Decode base64 to buffer
@@ -226,102 +216,12 @@ export class ReadPDFTool extends BaseTool<Input> {
     // Sanitize text to remove prompt injection patterns
     const sanitizedText = sanitizeText(pdfText);
 
-    // If no media service, return the extracted text
-    if (!this.mediaService) {
-      const unavailable = createMediaCapabilityUnavailableError('tts');
-      return {
-        success: true,
-        data: {
-          text: sanitizedText.slice(0, 10000), // Limit text in response
-          pageCount: numPages,
-          textLength: sanitizedText.length,
-          ttsUnavailable: true,
-        },
-        error: unavailable.message,
-        errorCode: ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE,
-        durationMs: 0,
-      };
-    }
-
-    // Split text into chunks for TTS
-    const chunks: string[] = [];
-    let currentChunk = '';
-
-    // Split by paragraphs first, then by character limit
-    const paragraphs = sanitizedText.split(/\n\n+/);
-    for (const paragraph of paragraphs) {
-      if (currentChunk.length + paragraph.length > TTS_CHUNK_SIZE) {
-        if (currentChunk.trim()) {
-          chunks.push(currentChunk.trim());
-        }
-        // If single paragraph exceeds chunk size, split by sentences
-        if (paragraph.length > TTS_CHUNK_SIZE) {
-          const sentences = paragraph.match(/[^.!?]+[.!?]+/g) || [paragraph];
-          for (const sentence of sentences) {
-            if (currentChunk.length + sentence.length > TTS_CHUNK_SIZE) {
-              if (currentChunk.trim()) {
-                chunks.push(currentChunk.trim());
-              }
-              currentChunk = sentence;
-            } else {
-              currentChunk += sentence;
-            }
-          }
-        } else {
-          currentChunk = paragraph;
-        }
-      } else {
-        currentChunk += '\n\n' + paragraph;
-      }
-    }
-    if (currentChunk.trim()) {
-      chunks.push(currentChunk.trim());
-    }
-
-    // Synthesize speech for each chunk and collect audio
-    const audioChunks: Buffer[] = [];
-    try {
-      for (const chunk of chunks) {
-        const audio = await this.mediaService.synthesizeSpeech(chunk);
-        audioChunks.push(audio.data);
-      }
-    } catch (err) {
-      if (isMediaCapabilityUnavailableError(err) || (
-        typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === MEDIA_CAPABILITY_UNAVAILABLE_CODE
-      )) {
-        const unavailable = createMediaCapabilityUnavailableError('tts');
-        return {
-          success: true,
-          data: {
-            text: sanitizedText.slice(0, 10000),
-            pageCount: numPages,
-            textLength: sanitizedText.length,
-            ttsUnavailable: true,
-          },
-          error: unavailable.message,
-          errorCode: ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE,
-          durationMs: 0,
-        };
-      }
-      throw err;
-    }
-
-    // Combine all audio chunks
-    const combinedAudio = Buffer.concat(audioChunks);
-
-    // Deliver audio via callback
-    if (context.onAudioGenerated) {
-      context.onAudioGenerated(combinedAudio.toString('base64'), 'audio/mp3');
-    }
-
     return {
       success: true,
       data: {
+        text: sanitizedText,
         pageCount: numPages,
         textLength: sanitizedText.length,
-        chunkCount: chunks.length,
-        mimeType: 'audio/mp3',
-        audioDelivered: true,
       },
       durationMs: 0,
     };

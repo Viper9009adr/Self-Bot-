@@ -2,8 +2,16 @@
  * src/adapters/whatsapp/responder.ts
  * Convert UnifiedResponse to whatsapp-web.js client.sendMessage calls.
  */
+import { createRequire } from 'module';
 import type { Client } from 'whatsapp-web.js';
 import type { UnifiedResponse, WhatsAppMetadata } from '../../types/message.js';
+
+const _require = createRequire(import.meta.url);
+// MessageMedia is not accessible as a named TS export from this package version;
+// load it at runtime via require and cast to a compatible structural type.
+type WASendableMedia = { mimetype: string; data: string; filename?: string | null };
+type MessageMediaConstructor = new (mimetype: string, data: string, filename?: string | null) => WASendableMedia;
+const { MessageMedia } = _require('whatsapp-web.js') as { MessageMedia: MessageMediaConstructor };
 import { childLogger } from '../../utils/logger.js';
 
 const log = childLogger({ module: 'whatsapp:responder' });
@@ -47,6 +55,24 @@ export async function sendWAResponse(client: Client, response: UnifiedResponse):
     } catch (err) {
       log.error({ chatId, err }, 'Failed to send WhatsApp audio fallback message');
       throw err;
+    }
+  }
+
+  // Send images before text so media appears above the caption in the chat thread.
+  const imageAttachments = response.attachments?.filter(
+    (att) => att.type === 'image' && 'data' in att && att.data
+  ) ?? [];
+  for (const attachment of imageAttachments) {
+    try {
+      const media = new MessageMedia(
+        attachment.mimeType ?? 'image/jpeg',
+        (attachment as { data: string }).data,
+        'image.jpg'
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await client.sendMessage(chatId, media as any);
+    } catch (err) {
+      log.error({ chatId, err }, 'Failed to send WhatsApp image');
     }
   }
 

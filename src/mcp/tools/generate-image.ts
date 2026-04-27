@@ -16,15 +16,25 @@ import {
 
 const inputSchema = z.object({
   prompt: z.string().min(1).describe('Detailed description of the image to generate'),
-  size: z.string().optional().describe('Image size, e.g. 1024x1024'),
-  quality: z.string().optional().describe('Image quality: standard, hd, low, medium, high, auto'),
+  size: z.preprocess(
+    (value) => value === undefined ? null : value,
+    z.string().nullable(),
+  ).describe('Image size, e.g. 1024x1024. Use null for the configured default.'),
+  quality: z.preprocess(
+    (value) => value === undefined ? null : value,
+    z.string().nullable(),
+  ).describe('Image quality: standard, hd, low, medium, high, auto. Use null for the configured default.'),
 });
 
-type Input = z.infer<typeof inputSchema>;
+type ParsedInput = z.infer<typeof inputSchema>;
+type Input = Omit<ParsedInput, 'size' | 'quality'> & {
+  size?: string | null;
+  quality?: string | null;
+};
 
 export class GenerateImageTool extends BaseTool<Input & JsonObject> {
   readonly name = 'generate_image';
-  readonly description = 'Generate an image from a text prompt and deliver it to the user in the chat.';
+  readonly description = 'Generate an image from a text prompt. Use this tool whenever the user asks for any image, picture, photo, drawing, or visual — including follow-up requests like "try again" or "another one".';
   readonly inputSchema = inputSchema as unknown as z.ZodType<Input & JsonObject, z.ZodTypeDef, Input & JsonObject>;
 
   constructor(private readonly mediaService: IMediaService | null) { super(); }
@@ -42,9 +52,11 @@ export class GenerateImageTool extends BaseTool<Input & JsonObject> {
     }
     try {
       const genOptions: import('../../media/index.js').ImageGenOptions = {};
-      if (input.size) genOptions.size = input.size as string;
-      if (input.quality) genOptions.quality = input.quality as string;
-      const image = await this.mediaService.generateImage(input.prompt as string, genOptions);
+      if (typeof input.size === 'string' && input.size.trim()) genOptions.size = input.size;
+      if (typeof input.quality === 'string' && input.quality.trim()) genOptions.quality = input.quality;
+      if (context.onProgress) genOptions.onProgress = context.onProgress;
+      const cleanPrompt = (input.prompt as string).replace(/\s*--literal\b/gi, '').trim();
+      const image = await this.mediaService.generateImage(cleanPrompt, genOptions);
       if (image.data && context.onImageGenerated) {
         context.onImageGenerated(image.data.toString('base64'), image.mimeType ?? 'image/png');
       }
@@ -52,7 +64,7 @@ export class GenerateImageTool extends BaseTool<Input & JsonObject> {
         success: true,
         data: {
           imageGenerated: true,
-          prompt: input.prompt as string,
+          prompt: cleanPrompt,
           ...(image.revisedPrompt ? { revisedPrompt: image.revisedPrompt } : {}),
         },
         durationMs: 0,

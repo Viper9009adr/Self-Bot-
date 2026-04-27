@@ -3,10 +3,27 @@
  * Convert UnifiedResponse to Grammy API calls.
  */
 import { Bot, InputFile } from 'grammy';
+import sharp from 'sharp';
 import type { UnifiedResponse, TelegramMetadata } from '../../types/message.js';
 import { childLogger } from '../../utils/logger.js';
 
 const log = childLogger({ module: 'telegram:responder' });
+
+/**
+ * Resize and JPEG-encode `buf` when it exceeds 8 MB (Telegram's effective photo upload limit is
+ * 10 MB; 8 MB gives headroom). Returns the original buffer unchanged if it is already small enough.
+ * Output filename reflects the actual format: `image.jpg` after compression, `image.png` otherwise.
+ */
+async function compressIfOversized(buf: Buffer): Promise<{ buf: Buffer; filename: string }> {
+  if (buf.byteLength > 8_000_000) {
+    const compressed = await sharp(buf)
+      .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    return { buf: compressed, filename: 'image.jpg' };
+  }
+  return { buf, filename: 'image.png' };
+}
 
 const MAX_MESSAGE_LENGTH = 4096;
 
@@ -104,7 +121,8 @@ export async function sendTelegramResponse(
           }
         } else if (attachment.type === 'image' && 'data' in attachment && attachment.data) {
           const buf = Buffer.from(attachment.data, 'base64');
-          await bot.api.sendPhoto(chatId, new InputFile(buf, 'image.png'));
+          const { buf: sendBuf, filename } = await compressIfOversized(buf);
+          await bot.api.sendPhoto(chatId, new InputFile(sendBuf, filename));
         } else if (attachment.type === 'image' && 'fileId' in attachment && attachment.fileId) {
           await bot.api.sendPhoto(chatId, attachment.fileId);
         } else if (attachment.type === 'document' && 'fileId' in attachment && attachment.fileId) {

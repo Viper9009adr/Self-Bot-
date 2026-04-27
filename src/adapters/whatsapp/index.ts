@@ -28,6 +28,15 @@ export class WhatsAppAdapter implements IAdapter {
     this.maxPerUserConcurrency = config.queue.perUserConcurrency;
   }
 
+  private getLidResolver(): { getContactLidAndPhone(jids: string[]): Promise<Array<{ pn?: string }>> } | null {
+    const client = this.client as Client & {
+      getContactLidAndPhone?: (jids: string[]) => Promise<Array<{ pn?: string }>>;
+    };
+    return typeof client.getContactLidAndPhone === 'function'
+      ? { getContactLidAndPhone: client.getContactLidAndPhone.bind(client) }
+      : null;
+  }
+
   async initialize(): Promise<void> {
     // CRITICAL: Guard against unconfigured adapter
     if (!this.config.whatsapp) {
@@ -53,10 +62,23 @@ export class WhatsAppAdapter implements IAdapter {
 
     // Wire per-user rate limiting + message dispatch
     this.client.on('message', async (msg: Message) => {
-      const message = normalizeWAMessage(msg);
-      if (!message) return;
+      // WhatsApp now uses @lid for privacy - try to resolve real number
+      let resolvedFrom = msg.from;
+      if (msg.from.endsWith('@lid')) {
+        try {
+          const lidResolver = this.getLidResolver();
+          const result = lidResolver ? await lidResolver.getContactLidAndPhone([msg.from]) : null;
+          if (result && result[0]?.pn) {
+            resolvedFrom = result[0].pn; // Returns phone number with @c.us suffix
+          }
+        } catch (err) {
+          log.warn({ err }, 'Failed to resolve WhatsApp LID');
+        }
+      }
 
-      log.debug({ userId: message.userId, text: message.text.slice(0, 50) }, 'WA message received');
+      // Create modified message with resolved sender if available
+      const message = normalizeWAMessage({ ...msg, from: resolvedFrom });
+      if (!message) return;
 
       const userId = message.userId;
       const current = this.userConcurrency.get(userId) ?? 0;

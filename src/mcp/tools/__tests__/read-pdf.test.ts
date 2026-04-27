@@ -34,7 +34,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('accepts plain base64 at the minimum threshold', async () => {
     const source = createPdfLikeBuffer(1024);
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: source.toString('base64') }, context);
 
@@ -46,7 +46,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('accepts data URI wrapped base64 by stripping prefix', async () => {
     const source = createPdfLikeBuffer(1024, 'preamble-data\n');
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
     const pdfBase64 = `data:application/pdf;base64,${source.toString('base64')}`;
 
     const result = await tool.execute({ pdfBase64 }, context);
@@ -59,7 +59,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('accepts base64 containing whitespace', async () => {
     const source = createPdfLikeBuffer(1024, '\ufeff \n\tgarbage-before-header\n');
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: withWhitespace(source.toString('base64')) }, context);
 
@@ -71,7 +71,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('rejects payloads smaller than the minimum threshold', async () => {
     const source = createPdfLikeBuffer(200);
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: source.toString('base64') }, context);
 
@@ -83,7 +83,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('rejects PK container payloads as unsupported file type', async () => {
     const source = Buffer.concat([Buffer.from([0x50, 0x4B, 0x03, 0x04]), Buffer.alloc(1400, 0x00)]);
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: source.toString('base64') }, context);
 
@@ -97,7 +97,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('accepts PDF signature after BOM and preamble within first 1KB', async () => {
     const source = createPdfLikeBuffer(1500, `\ufeff\n\n${'x'.repeat(100)}\n`);
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: source.toString('base64') }, context);
 
@@ -109,7 +109,7 @@ describe('ReadPDFTool base64 normalization', () => {
 
   it('returns too-small for real PDF signatures below threshold', async () => {
     const source = createPdfLikeBuffer(300);
-    const tool = new ReadPDFTool(null);
+    const tool = new ReadPDFTool();
 
     const result = await tool.execute({ pdfBase64: source.toString('base64') }, context);
 

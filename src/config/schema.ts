@@ -84,6 +84,7 @@ export const ConfigSchema = z.object({
     localSttUrl: z.string().url().optional(),
     localTtsUrl: z.string().url().optional(),
     localImageUrl: z.string().url().optional(),
+    localComfyuiUrl: z.string().url().optional(),
   }).transform((llm) => ({
     ...llm,
     // If model is not explicitly set, pick a sensible default for the provider.
@@ -192,6 +193,7 @@ export const ConfigSchema = z.object({
     imageSize: z.string().default('1024x1024'),
     imageQuality: z.enum(['standard', 'hd', 'low', 'medium', 'high', 'auto']).default('standard'),
     nvidiaNimImageModel: z.string().default('stabilityai/stable-diffusion-3-medium'),
+    comfyuiWorkflowPath: z.string().optional(),
   }).optional(),
 
   // ── Terminal ────────────────────────────────────────────────────────────────

@@ -107,6 +107,8 @@ export interface ToolContext {
   onImageGenerated?: (imageBase64: string, mimeType: string) => void;
   /** Callback to deliver synthesized speech to the user. Populated per-request by AgentCore. */
   onAudioGenerated?: (audioBase64: string, mimeType: string) => void;
+  /** Callback for mid-execution progress updates (e.g. ComfyUI generation percentage). */
+  onProgress?: (status: string) => Promise<void>;
 }
 
 // ─── MCPToolDefinition ───────────────────────────────────────────────────────

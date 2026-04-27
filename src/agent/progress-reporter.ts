@@ -105,6 +105,21 @@ export class ProgressReporter {
   }
 
   /**
+   * Update the in-progress line for a running step with an intermediate status string.
+   * Used by ComfyUI (and other long-running tools) to push percentage updates without
+   * creating a new line. No-ops if the step's line index is not yet registered.
+   */
+  async onStepProgress(stepN: number, _toolName: string, status: string): Promise<void> {
+    if (this.failed || this.messageId === null) return;
+    const lineIndex = this.lineIndexMap.get(stepN);
+    if (lineIndex === undefined) return;
+    this.lines[lineIndex] = this.mode === 'single'
+      ? `⚙ ${status}`
+      : `⚙ Step ${stepN} — ${status}`;
+    await this.editMessage();
+  }
+
+  /**
    * Attempt to replace the progress message with final assistant response.
    * Returns true only when Telegram edit succeeds end-to-end.
    */

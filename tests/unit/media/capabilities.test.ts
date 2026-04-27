@@ -114,7 +114,7 @@ describe('media capability unavailable contract helpers', () => {
   it('exposes stable unavailable error code and messages', () => {
     const imageErr = createMediaCapabilityUnavailableError('image');
     expect(imageErr.code).toBe(MEDIA_CAPABILITY_UNAVAILABLE_CODE);
-    expect(imageErr.message).toBe('Image capability not configured. Set LOCAL_IMAGE_URL or OPENAI_API_KEY.');
+    expect(imageErr.message).toBe('Image capability not configured. Set LOCAL_COMFYUI_URL, LOCAL_IMAGE_URL, or OPENAI_API_KEY.');
     expect(mediaCapabilityUnavailableMessage('stt')).toBe('STT capability not configured. Set LOCAL_STT_URL or OPENAI_API_KEY.');
     expect(mediaCapabilityUnavailableMessage('tts')).toBe('TTS capability not configured. Set LOCAL_TTS_URL or OPENAI_API_KEY and MEDIA_TTS_ENABLED=true.');
     expect(isMediaCapabilityUnavailableError(imageErr)).toBe(true);

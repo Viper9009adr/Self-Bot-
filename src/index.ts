@@ -192,7 +192,7 @@ async function bootstrap(): Promise<void> {
     new EditImageTool(mediaService),
     new TranscribeAudioTool(mediaService),
     new SynthesizeSpeechTool(mediaService),
-    new ReadPDFTool(mediaService),
+    new ReadPDFTool(),
     new CheckPendingTasksTool(sessionManager, taskQueue),
   ]);
 
@@ -582,9 +582,14 @@ async function bootstrap(): Promise<void> {
             reporter!.onStepDone(stepN, toolName, durationMs, result)
         : undefined;
 
+      const progressHook = reporter
+        ? (stepN: number, toolName: string, status: string) =>
+            reporter!.onStepProgress(stepN, toolName, status)
+        : undefined;
+
       let response: UnifiedResponse;
       try {
-        response = await agent.handleMessage(currentMessage, undefined, startHook, doneHook);
+        response = await agent.handleMessage(currentMessage, undefined, startHook, doneHook, progressHook);
       } finally {
         if (reporter) await reporter.cleanup().catch(() => undefined);
       }

@@ -18,6 +18,57 @@ import type { LanguageModel } from 'ai';
 import type { Config } from '../config/index.js';
 import { ConfigError } from '../utils/errors.js';
 
+export const MODEL_INPUT_TOKEN_CAP_MIN = 1_000;
+export const MODEL_INPUT_TOKEN_CAP_MAX = 1_000_000;
+export const MODEL_INPUT_TOKEN_CAP_DEFAULT = 8_000;
+
+function clampModelInputTokenCap(value: number): number {
+  return Math.min(MODEL_INPUT_TOKEN_CAP_MAX, Math.max(MODEL_INPUT_TOKEN_CAP_MIN, value));
+}
+
+function parsePositiveInteger(value: string | undefined): number | null {
+  if (value === undefined) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return parsed > 0 ? parsed : null;
+}
+
+/**
+ * Resolve the active model input-token cap from environment configuration.
+ *
+ * LLM_INPUT_TOKEN_CAP_DEFAULT sets the fallback cap for any model.
+ * LLM_MODEL_INPUT_TOKEN_CAPS accepts comma-separated model overrides:
+ *   gpt-5-mini:4000,claude-sonnet-4-20250514=200000
+ */
+export function getModelInputTokenCap(model: string): number {
+  const defaultCap = clampModelInputTokenCap(
+    parsePositiveInteger(process.env['LLM_INPUT_TOKEN_CAP_DEFAULT']) ?? MODEL_INPUT_TOKEN_CAP_DEFAULT,
+  );
+  const rawCaps = process.env['LLM_MODEL_INPUT_TOKEN_CAPS'];
+  if (!rawCaps) {
+    return defaultCap;
+  }
+
+  const normalizedModel = model.trim().toLowerCase();
+  for (const entry of rawCaps.split(',')) {
+    const [rawName, rawValue] = entry.split(/[:=]/, 2);
+    const name = rawName?.trim().toLowerCase();
+    if (!name || name !== normalizedModel) {
+      continue;
+    }
+
+    const value = parsePositiveInteger(rawValue);
+    return value === null ? defaultCap : clampModelInputTokenCap(value);
+  }
+
+  return defaultCap;
+}
+
 /**
  * Derive LLMProvider from the Zod schema to prevent drift between
  * the config enum and this type alias.

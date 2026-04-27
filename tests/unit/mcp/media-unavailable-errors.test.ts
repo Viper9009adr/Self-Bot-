@@ -22,7 +22,7 @@ describe('media tool unavailable error contract', () => {
     const result = await tool.execute({ prompt: 'sunset' }, context);
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe(ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE);
-    expect(result.error).toBe('Image capability not configured. Set LOCAL_IMAGE_URL or OPENAI_API_KEY.');
+    expect(result.error).toBe('Image capability not configured. Set LOCAL_COMFYUI_URL, LOCAL_IMAGE_URL, or OPENAI_API_KEY.');
   });
 
   it('edit_image returns explicit image unavailable contract', async () => {
@@ -35,7 +35,7 @@ describe('media tool unavailable error contract', () => {
     }, context);
     expect(result.success).toBe(false);
     expect(result.errorCode).toBe(ToolErrorCode.MEDIA_CAPABILITY_UNAVAILABLE);
-    expect(result.error).toBe('Image capability not configured. Set LOCAL_IMAGE_URL or OPENAI_API_KEY.');
+    expect(result.error).toBe('Image capability not configured. Set LOCAL_COMFYUI_URL, LOCAL_IMAGE_URL, or OPENAI_API_KEY.');
   });
 
   it('transcribe_audio returns explicit stt unavailable contract', async () => {

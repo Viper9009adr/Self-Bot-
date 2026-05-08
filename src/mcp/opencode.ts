@@ -84,11 +84,67 @@ const BRIDGE_ALIASES = new Set(['code_editor']);
 export function buildOpencodeTerminalSessionStart(input: OpencodeBridgeInput): OpencodeBridgeResult {
   const text = input.text.trim();
 
+  const interactiveMatch = text.match(/^\s*terminal_session\s*\[\s*(approve|deny|input)\s*\]\s*(.*)$/i);
+  if (interactiveMatch) {
+    if (seenMessageIds.has(input.messageId)) {
+      return { shouldHandle: true, duplicate: true };
+    }
+    seenMessageIds.add(input.messageId);
+
+    const action = (interactiveMatch[1] ?? '').toLowerCase() as 'approve' | 'deny' | 'input';
+    const remainder = (interactiveMatch[2] ?? '').trim();
+
+    if (action === 'approve' || action === 'deny') {
+      if (!remainder) {
+        return {
+          shouldHandle: true,
+          duplicate: false,
+          userError: `Missing sessionId for terminal_session[${action}]`,
+        };
+      }
+
+      return {
+        shouldHandle: true,
+        duplicate: false,
+        toolInput: {
+          action,
+          sessionId: remainder,
+        },
+      };
+    }
+
+    const parts = remainder.split(/\s+/);
+    const sessionId = parts.shift() ?? '';
+    const inputText = parts.join(' ').trim();
+    if (!sessionId || !inputText) {
+      return {
+        shouldHandle: true,
+        duplicate: false,
+        userError: 'Usage: terminal_session[input] <sessionId> <text>',
+      };
+    }
+
+    return {
+      shouldHandle: true,
+      duplicate: false,
+      toolInput: {
+        action: 'input',
+        sessionId,
+        input: inputText,
+      },
+    };
+  }
+
   // Handle "opencode run /path --prompt" or "opencode /path --prompt" format FIRST
   // This must be checked before the prefix check because these messages don't have a colon
   // Regex uses (?:[^"\\]|\\.)* to properly capture escaped quotes like \" within the prompt value
   const runPromptMatch = text.match(/^opencode\s+(run\s+)?(\S+)\s+.*?--prompt\s+"((?:[^"\\]|\\.)*)"(?:\s+--approve\s+(?:"((?:[^"\\]|\\.)*)"|(\S+)))?/i);
   if (runPromptMatch) {
+    if (seenMessageIds.has(input.messageId)) {
+      return { shouldHandle: true, duplicate: true };
+    }
+    seenMessageIds.add(input.messageId);
+
     // runPromptMatch[1] = "run " or undefined
     // runPromptMatch[2] = path (e.g., "/home/viper9009adr/Dev/TestingBOT")
     // runPromptMatch[3] = prompt

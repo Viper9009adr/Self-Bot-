@@ -7,7 +7,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import matter from 'gray-matter';
 import { childLogger } from '../utils/logger.js';
-import type { SkillDefinition, LoadedSkill, SkillArgument } from './types.js';
+import type { SkillDefinition, LoadedSkill, SkillArgument, SkillTransformation } from './types.js';
 import { validateSkillDefinition } from './validator.js';
 
 const log = childLogger({ module: 'terminal:loader' });
@@ -73,35 +73,69 @@ const frontmatter = data as Record<string, unknown>;
     requiresShellMode: frontmatter.requiresShellMode === true ? true : false,
   };
 
-   // Parse shellQuoting rules from YAML frontmatter
-   // Rules are position-based: each rule specifies whether an argument at a given
-   // position should be quoted or not. Supports positive indices (0, 1, 2...) and
-   // negative indices (-1 for last, -2 for second-to-last, etc.).
-   // Load-time validation ensures no duplicate positions are specified.
-   if (frontmatter.shellQuoting && typeof frontmatter.shellQuoting === 'object') {
-    const sq = frontmatter.shellQuoting as { argRules?: unknown };
-    if (sq.argRules && Array.isArray(sq.argRules)) {
-      const seenPositions = new Set<number>();
-      const rules = sq.argRules.map((rule: unknown) => {
-        if (typeof rule !== 'object' || rule === null) {
-          throw new Error(`Invalid shellQuoting rule in ${filePath}: rule must be an object`);
-        }
-        const r = rule as { position?: unknown; quote?: unknown };
-        if (typeof r.position !== 'number') {
-          throw new Error(`Invalid shellQuoting rule in ${filePath}: position must be a number`);
-        }
-        if (seenPositions.has(r.position)) {
-          throw new Error(`Duplicate position ${r.position} in shellQuoting rules for skill ${name}`);
-        }
-        seenPositions.add(r.position);
-        return {
-          position: r.position,
-          quote: r.quote === true
-        };
-      });
-      definition.shellQuoting = { argRules: rules };
-    }
-  }
+// Parse shellQuoting rules from YAML frontmatter
+    // Rules are position-based: each rule specifies whether an argument at a given
+    // position should be quoted or not. Supports positive indices (0, 1, 2...) and
+    // negative indices (-1 for last, -2 for second-to-last, etc.).
+    // Load-time validation ensures no duplicate positions are specified.
+    if (frontmatter.shellQuoting && typeof frontmatter.shellQuoting === 'object') {
+     const sq = frontmatter.shellQuoting as { argRules?: unknown };
+     if (sq.argRules && Array.isArray(sq.argRules)) {
+       const seenPositions = new Set<number>();
+       const rules = sq.argRules.map((rule: unknown) => {
+         if (typeof rule !== 'object' || rule === null) {
+           throw new Error(`Invalid shellQuoting rule in ${filePath}: rule must be an object`);
+         }
+         const r = rule as { position?: unknown; quote?: unknown };
+         if (typeof r.position !== 'number') {
+           throw new Error(`Invalid shellQuoting rule in ${filePath}: position must be a number`);
+         }
+         if (seenPositions.has(r.position)) {
+           throw new Error(`Duplicate position ${r.position} in shellQuoting rules for skill ${name}`);
+         }
+         seenPositions.add(r.position);
+         return {
+           position: r.position,
+           quote: r.quote === true
+         };
+       });
+       definition.shellQuoting = { argRules: rules };
+     }
+   }
+
+   // Parse subcommand (e.g., "run")
+   if (typeof frontmatter.subcommand === 'string') {
+     definition.subcommand = frontmatter.subcommand;
+   }
+
+   // Parse approveFlag (e.g., "--dangerously-skip-permissions")
+   if (typeof frontmatter.approveFlag === 'string') {
+     definition.approveFlag = frontmatter.approveFlag;
+   }
+
+   // Parse transformations array
+   if (Array.isArray(frontmatter.transformations)) {
+     const transforms: SkillTransformation[] = [];
+     for (const t of frontmatter.transformations) {
+       if (typeof t !== 'object' || t === null) {
+         throw new Error(`Invalid transformation in ${filePath}: must be an object`);
+       }
+       const transform = t as { type?: unknown; flag?: unknown; value?: unknown; targetFlag?: unknown };
+       if (typeof transform.type !== 'string') {
+         throw new Error(`Invalid transformation in ${filePath}: type must be a string`);
+       }
+       if (typeof transform.flag !== 'string') {
+         throw new Error(`Invalid transformation in ${filePath}: flag must be a string`);
+       }
+transforms.push({
+          type: transform.type as SkillTransformation['type'],
+          flag: transform.flag,
+          ...(typeof transform.value === 'string' && { value: transform.value }),
+          ...(typeof transform.targetFlag === 'string' && { targetFlag: transform.targetFlag }),
+        });
+     }
+     definition.transformations = transforms;
+   }
 
   // Validate the skill definition
   const validation = validateSkillDefinition(definition);

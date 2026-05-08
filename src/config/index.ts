@@ -43,6 +43,7 @@ function buildRawConfig(): Record<string, unknown> {
       openaiApiKey: process.env['OPENAI_API_KEY'],
       anthropicApiKey: process.env['ANTHROPIC_API_KEY'],
       groqApiKey: process.env['GROQ_API_KEY'],
+      googleApiKey: process.env['GOOGLE_API_KEY'],
       // OAuth / token-based providers (free alternatives)
       githubToken: process.env['GITHUB_TOKEN'],
       openrouterApiKey: process.env['OPENROUTER_API_KEY'],
@@ -147,6 +148,7 @@ function buildRawConfig(): Record<string, unknown> {
   // Terminal configuration
   terminal: {
     skillsPath: process.env['TERMINAL_SKILLS_PATH'],
+    runtimeSkillsPath: process.env['TERMINAL_RUNTIME_SKILLS_PATH'],
     commandAllowlist: sanitizeList(process.env['TERMINAL_COMMAND_ALLOWLIST']),
     cwdAllowlist: sanitizeList(process.env['TERMINAL_CWD_ALLOWLIST']),
     strictCwdValidation: process.env['TERMINAL_STRICT_CWD_VALIDATION'],
@@ -169,8 +171,10 @@ const PROVIDER_MODEL_PREFIXES: Record<string, string[]> = {
   anthropic: ['claude-'],
   'claude-oauth': ['claude-'],
   groq: ['llama', 'mixtral', 'gemma', 'whisper'],
-  'github-models': ['gpt-', 'o1-', 'o3-', 'meta-llama', 'mistral', 'phi-'],
-  // openrouter uses diverse model slugs — skip prefix validation
+   'github-models': ['gpt-', 'o1-', 'o3-', 'meta-llama', 'mistral', 'phi-'],
+   google: ['gemini-'],
+   // openrouter uses diverse model slugs — skip prefix validation
+
 };
 
 /**

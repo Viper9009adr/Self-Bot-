@@ -15,6 +15,12 @@ import { RateLimitError } from '../../utils/errors.js';
 
 const log = childLogger({ module: 'telegram:adapter' });
 
+export function toTelegramUserResponseFromPollError(error: string): string {
+  // Keep wording stable: covered by unit test to ensure poll_err text shown to users
+  // stays explicit about polling failure source.
+  return `⚠️ OpenCode result polling failed: ${error}`;
+}
+
 export class TelegramAdapter implements IAdapter {
   public readonly name = 'telegram';
 

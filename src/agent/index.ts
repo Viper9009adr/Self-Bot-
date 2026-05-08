@@ -3,7 +3,7 @@
  * AgentCore: the main agent loop that processes messages using LLM + tools.
  * Implements the streamText() multi-turn tool call loop.
  */
-import { jsonSchema, streamText, type CoreMessage, type ToolCallPart, type ToolResultPart } from 'ai';
+import { jsonSchema, streamText, type ModelMessage, type ToolCallPart, type ToolResultPart } from 'ai';
 import type { UnifiedMessage, UnifiedResponse, FileAttachment, HistoryMessage } from '../types/message.js';
 import type { ToolContext } from '../types/tool.js';
 import type { Config } from '../config/index.js';
@@ -207,7 +207,7 @@ export class AgentCore {
     return Math.ceil(chars / 4);
   }
 
-  private estimateRequestTokens(system: string, messages: CoreMessage[], enabledToolNames: ReadonlySet<string>): number {
+  private estimateRequestTokens(system: string, messages: ModelMessage[], enabledToolNames: ReadonlySet<string>): number {
     const messageChars = messages.reduce((acc, message) => {
       if (typeof message.content === 'string') {
         return acc + message.content.length;
@@ -564,7 +564,7 @@ export class AgentCore {
       let { system, messages: historyMessages } = this.cotBuilder.build(memory.getMessages());
 
       // Convert to CoreMessage format for Vercel AI SDK
-      let coreMessages: CoreMessage[] = historyMessages.map((m) => {
+      let coreMessages: ModelMessage[] = historyMessages.map((m) => {
         if (m.role === 'user') return { role: 'user' as const, content: m.content };
         if (m.role === 'assistant') return { role: 'assistant' as const, content: m.content };
         // Tool messages require specific format
@@ -702,7 +702,7 @@ export class AgentCore {
           abortSignal: abortController.signal,
           onError: (event: { error: unknown }) => {
             streamError = event.error;
-            childLog.error({ err: event.error }, 'LLM stream error (onError callback)');
+            childLog.error({ err: normalizeError(event.error).toJSON() }, 'LLM stream error (onError callback)');
           },
           onStepFinish: async (step: { toolCalls?: unknown[]; toolResults?: unknown[]; text?: string }) => {
             // Count tool calls and log at info level for visibility
@@ -712,7 +712,7 @@ export class AgentCore {
                 childLog.info(
                   {
                     tool: tc.toolName,
-                    args: JSON.stringify(tc.args).slice(0, 300),
+                    args: JSON.stringify(tc.input).slice(0, 300),
                     step: toolCallCount,
                   },
                   `🔧 Tool call: ${tc.toolName}`,
@@ -723,9 +723,10 @@ export class AgentCore {
             // Log tool results at info level
             if (step.toolResults && step.toolResults.length > 0) {
               for (const tr of step.toolResults as ToolResultPart[]) {
-                const resultStr = JSON.stringify(tr.result).slice(0, 300);
-                const success = typeof tr.result === 'object' && tr.result !== null && 'success' in tr.result
-                  ? (tr.result as { success: boolean }).success
+                const resultValue = tr.output.type === 'json' ? tr.output.value : tr.output;
+                const resultStr = JSON.stringify(resultValue).slice(0, 300);
+                const success = typeof resultValue === 'object' && resultValue !== null && 'success' in resultValue
+                  ? (resultValue as { success: boolean }).success
                   : undefined;
                 childLog.info(
                   {
@@ -777,13 +778,9 @@ export class AgentCore {
         }
 
         const resultText = await result.text;
-
-        const selectedCandidate = this.selectFinalTextCandidate(
-          resultText,
-          lastStepTextNoToolCalls,
-          streamBuffer,
-        );
-        let selectedFinal = selectedCandidate;
+        const toolFallback = this.selectFinalTextCandidate(lastStepTextNoToolCalls, streamBuffer);
+        const selectedCandidate = this.resolveFinalText(resultText, toolFallback);
+        let selectedFinal = this.filterFinalTextCandidate(selectedCandidate);
         if (!selectedFinal.trim()) {
           selectedFinal = EMPTY_RESPONSE_WARNING;
         }
@@ -926,13 +923,11 @@ export class AgentCore {
    * then raw concatenated stream chunks. Each candidate is normalized and cleaned
    * by `filterFinalTextCandidate()` before selection.
    */
-  private selectFinalTextCandidate(
-    resultText: string,
-    lastStepTextNoToolCalls: string,
-    streamBuffer: string,
-  ): string {
-    const candidates = [resultText, lastStepTextNoToolCalls, streamBuffer];
+  private selectFinalTextCandidate(...candidates: unknown[]): string {
     for (const candidate of candidates) {
+      if (typeof candidate !== 'string') {
+        continue;
+      }
       const filtered = this.filterFinalTextCandidate(candidate);
       if (filtered) {
         return filtered;
@@ -973,6 +968,18 @@ export class AgentCore {
   }
 
   /**
+   * Resolve final assistant text deterministically.
+   *
+   * Uses model finalText only when it is a non-empty string after trim;
+   * otherwise falls back to tool-derived text.
+   */
+  private resolveFinalText(resultText: unknown, toolFallback: string): string {
+    return typeof resultText === 'string' && resultText.trim().length > 0
+      ? resultText
+      : toolFallback;
+  }
+
+  /**
    * Build Vercel AI SDK tool definitions from the registry.
    * Each tool's execute function runs through the TaskQueue.
    *
@@ -996,14 +1003,14 @@ export class AgentCore {
   ): Record<string, {
     description: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    parameters: any;
+    inputSchema: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execute: (input: any) => Promise<unknown>;
   }> {
     const result: Record<string, {
       description: string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      parameters: any;
+      inputSchema: any;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       execute: (input: any) => Promise<unknown>;
     }> = {};
@@ -1015,7 +1022,7 @@ export class AgentCore {
       }
       result[toolName] = {
         description: tool.description,
-        parameters: this.toolParametersForProvider(toolName, tool.inputSchema),
+        inputSchema: this.toolParametersForProvider(toolName, tool.inputSchema),
         execute: async (input: Record<string, unknown>) => {
           const myStep = ++stepCounter.count;
 

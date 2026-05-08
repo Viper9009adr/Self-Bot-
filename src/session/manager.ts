@@ -4,7 +4,7 @@
  */
 import { nanoid } from 'nanoid';
 import type { SessionStore, UserSession, MemoryPolicy } from '../types/session.js';
-import { DEFAULT_MEMORY_POLICY } from '../types/session.js';
+import { CURRENT_SESSION_VERSION, DEFAULT_MEMORY_POLICY } from '../types/session.js';
 import type { HistoryMessage } from '../types/message.js';
 import { SessionError } from '../utils/errors.js';
 import { childLogger } from '../utils/logger.js';
@@ -15,17 +15,22 @@ export interface SessionManagerOptions {
   store: SessionStore;
   defaultMaxHistoryTokens?: number;
   defaultMemoryPolicy?: MemoryPolicy;
+  sessionTtlSeconds?: number;
 }
 
 export class SessionManager {
   private readonly store: SessionStore;
   private readonly defaultMaxHistoryTokens: number;
   private readonly defaultMemoryPolicy: MemoryPolicy;
+  private readonly sessionTtlMs: number | null;
 
   constructor(options: SessionManagerOptions) {
     this.store = options.store;
     this.defaultMaxHistoryTokens = options.defaultMaxHistoryTokens ?? 8000;
     this.defaultMemoryPolicy = options.defaultMemoryPolicy ?? DEFAULT_MEMORY_POLICY;
+    this.sessionTtlMs = options.sessionTtlSeconds !== undefined
+      ? Math.max(60, options.sessionTtlSeconds) * 1000
+      : null;
   }
 
   /**
@@ -39,6 +44,11 @@ export class SessionManager {
   async getOrCreate(userId: string): Promise<UserSession> {
     const existing = await this.store.get(userId);
     if (existing) {
+      const resetReason = this.getSessionResetReason(existing);
+      if (resetReason) {
+        log.info({ userId, reason: resetReason }, 'Resetting persisted session');
+        return this.create(userId);
+      }
       log.trace({ userId }, 'Session hit');
       return existing;
     }
@@ -51,6 +61,7 @@ export class SessionManager {
   async create(userId: string): Promise<UserSession> {
     const now = new Date().toISOString();
     const session: UserSession = {
+      version: CURRENT_SESSION_VERSION,
       userId,
       history: [],
       maxHistoryTokens: this.defaultMaxHistoryTokens,
@@ -66,6 +77,23 @@ export class SessionManager {
     await this.store.set(userId, session);
     log.debug({ userId }, 'Session created');
     return session;
+  }
+
+  private getSessionResetReason(session: UserSession): 'version_mismatch' | 'stale' | null {
+    if (session.version !== CURRENT_SESSION_VERSION) {
+      return 'version_mismatch';
+    }
+
+    if (this.sessionTtlMs === null) {
+      return null;
+    }
+
+    const updatedAtMs = Date.parse(session.updatedAt);
+    if (!Number.isFinite(updatedAtMs)) {
+      return 'stale';
+    }
+
+    return (Date.now() - updatedAtMs) > this.sessionTtlMs ? 'stale' : null;
   }
 
   /**

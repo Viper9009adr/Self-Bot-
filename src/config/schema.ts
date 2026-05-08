@@ -36,6 +36,7 @@ const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
   'github-models': 'gpt-4o',
   openrouter: 'meta-llama/llama-3.1-8b-instruct:free',
   'nvidia-nim': 'meta/llama-3.1-8b-instruct',
+  google: 'gemini-2.0-flash-exp',
   local: 'llama3',
 };
 
@@ -62,13 +63,15 @@ export const ConfigSchema = z.object({
   // ── LLM ───────────────────────────────────────────────────────────────────
   llm: z.object({
     provider: z
-      .enum(['openai', 'anthropic', 'groq', 'github-models', 'openrouter', 'claude-oauth', 'nvidia-nim', 'local'])
-      .default('openai'),
+       .enum(['openai', 'anthropic', 'groq', 'github-models', 'openrouter', 'claude-oauth', 'nvidia-nim', 'local', 'google'])
+       .default('openai'),
     model: z.string().min(1).optional(),
     openaiApiKey: secretString.optional(),
     anthropicApiKey: secretString.optional(),
     groqApiKey: secretString.optional(),
+    googleApiKey: secretString.optional(),
     // ── OAuth / Token-based providers (free alternatives) ─────────────────
+
     githubToken: secretString.optional(),
     openrouterApiKey: secretString.optional(),
     openrouterReferer: z.string().url().optional(),
@@ -199,7 +202,8 @@ export const ConfigSchema = z.object({
   // ── Terminal ────────────────────────────────────────────────────────────────
   terminal: z.object({
     skillsPath: z.string().default('./terminal-skills'),
-    commandAllowlist: z.array(z.string()).default(['opencode', 'claude', 'codex', 'git']),
+    runtimeSkillsPath: z.string().default('./runtime-skills'),
+    commandAllowlist: z.array(z.string()).default([]),
     cwdAllowlist: z.array(z.string()).default(['/home', '/tmp']),
     strictCwdValidation: z.coerce.boolean().default(true),
     envBlocklist: z.array(z.string()).default(['AWS_', 'SECRET_', 'TOKEN_', 'API_KEY']),

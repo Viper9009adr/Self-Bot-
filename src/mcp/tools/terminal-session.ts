@@ -40,7 +40,15 @@ export class TerminalSessionTool extends BaseTool<TerminalSessionInput> {
    */
   async initialize(): Promise<void> {
     const config = getConfig();
-    const skills = await loadAllSkills(config.terminal.skillsPath);
+
+    // Load default skills
+    const defaultSkills = await loadAllSkills(config.terminal.skillsPath);
+
+    // Load runtime skills (override defaults if there's a conflict)
+    const runtimeSkills = await loadAllSkills(config.terminal.runtimeSkillsPath);
+
+    // Merge: runtime skills override defaults
+    const skills = new Map([...defaultSkills, ...runtimeSkills]);
 
     this.manager = new TerminalSessionManager(
       {

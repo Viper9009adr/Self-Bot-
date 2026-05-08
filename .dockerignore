@@ -1,0 +1,12 @@
+node_modules
+.git
+web
+.env
+*.log
+dist
+terminal-skills
+runtime-skills
+whatsapp-session
+.oauth-tokens.json
+.allowlist.json
+test_results.txt

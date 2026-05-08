@@ -84,21 +84,21 @@ export class MCPToolRegistry {
     {
       description: string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      parameters: any;
+      inputSchema: any;
       execute: (input: JsonObject) => Promise<ToolResult>;
     }
   > {
     const result: Record<string, {
       description: string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      parameters: any;
+      inputSchema: any;
       execute: (input: JsonObject) => Promise<ToolResult>;
     }> = {};
 
     for (const [name, tool] of this.tools) {
       result[name] = {
         description: tool.description,
-        parameters: tool.inputSchema,
+        inputSchema: tool.inputSchema,
         execute: (input) => tool.execute(input, {
           userId: 'system',
           taskId: `ai-${name}`,

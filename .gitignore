@@ -41,6 +41,7 @@ coverage/
 # Playwright
 playwright-report/
 test-results/
+test_results.txt
 
 # Opencode
 .opencode/
@@ -116,7 +117,13 @@ web/node_modules/
 
 # Whatsapp Integration
 .whatsapp-session/
+whatsapp-session/
 .wwebjs_cache/
+
+# Local terminal skills and runtime-generated skills
+runtime-skills/
+terminal-skills/opencode.md
+terminal-skills/codex.md
 
 # Future
 backend/

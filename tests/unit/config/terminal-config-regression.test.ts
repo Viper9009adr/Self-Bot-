@@ -68,7 +68,7 @@ describe('terminal config regression', () => {
     await withManagedEnv({}, () => {
       const config = loadConfig();
       expect(config.terminal.skillsPath).toBe('./terminal-skills');
-      expect(config.terminal.commandAllowlist).toEqual(['opencode', 'claude', 'codex', 'git']);
+      expect(config.terminal.commandAllowlist).toEqual([]);
       expect(config.terminal.cwdAllowlist).toEqual(['/home', '/tmp']);
       expect(config.terminal.envBlocklist).toEqual(['AWS_', 'SECRET_', 'TOKEN_', 'API_KEY']);
       expect(config.terminal.defaultTimeout).toBe(300000);
@@ -107,7 +107,7 @@ describe('terminal config regression', () => {
       },
       () => {
         const config = loadConfig();
-        expect(config.terminal.commandAllowlist).toEqual(['opencode', 'claude', 'codex', 'git']);
+        expect(config.terminal.commandAllowlist).toEqual([]);
         expect(config.terminal.cwdAllowlist).toEqual(['/home', '/tmp']);
         expect(config.terminal.envBlocklist).toEqual(['AWS_', 'SECRET_', 'TOKEN_', 'API_KEY']);
       },

@@ -8,7 +8,7 @@ import { getLogger } from './utils/logger.js';
 import { createSessionStore } from './session/store.js';
 import { SessionManager } from './session/manager.js';
 import { AdapterRegistry } from './adapters/registry.js';
-import { TelegramAdapter } from './adapters/telegram/index.js';
+import { TelegramAdapter, toTelegramUserResponseFromPollError } from './adapters/telegram/index.js';
 import { WhatsAppAdapter } from './adapters/whatsapp/index.js';
 import { WebAdapter } from './adapters/website/index.js';
 import { MCPToolRegistry } from './mcp/registry.js';
@@ -45,6 +45,7 @@ import { ContextInjector } from './context/contextInjector.js';
 import { MeridianSemanticRetriever } from './meridian/semanticRetriever.js';
 import { MeridianDeterministicRetriever } from './meridian/deterministicRetriever.js';
 import type { LoadedSkill } from './terminal/types.js';
+import type { ExecuteToolInput, ToolOutcomeEvent } from './terminal/manager.js';
 import { createInterface } from 'node:readline';
 import type { UnifiedMessage, UnifiedResponse } from './types/index.js';
 import type { FileAttachment } from './types/message.js';
@@ -163,6 +164,7 @@ async function bootstrap(): Promise<void> {
   const sessionManager = new SessionManager({
     store: sessionStore,
     defaultMaxHistoryTokens: config.agent.maxHistoryTokens,
+    sessionTtlSeconds: config.session.ttlSeconds,
   });
 
   shutdown.register(async () => {
@@ -205,6 +207,7 @@ async function bootstrap(): Promise<void> {
     await terminalSessionTool.shutdown();
   });
   log.info({ tools: toolRegistry.listNames() }, 'Tools registered');
+  const terminalSessionOwners = new Map<string, string>();
 
   // ── 4b. Remote MCP Tools ─────────────────────────────────────────────────
   const remoteMCPLoader = new RemoteMCPLoader(toolRegistry, config.mcp.remoteServers);
@@ -386,19 +389,55 @@ async function bootstrap(): Promise<void> {
           }
 
           if (opencodeBridge.toolInput) {
-            const bridgeResult = await toolRegistry.execute(
-              'terminal_session',
-              opencodeBridge.toolInput,
-              {
-                userId: message.userId,
-                taskId: `opencode-${message.id}`,
-                conversationId: message.conversationId,
+            const toolInput = opencodeBridge.toolInput as unknown as ExecuteToolInput;
+
+            if (
+              (toolInput.action === 'approve' || toolInput.action === 'deny' || toolInput.action === 'input')
+              && toolInput.sessionId
+            ) {
+              const ownerUserId = terminalSessionOwners.get(toolInput.sessionId);
+              if (ownerUserId !== message.userId) {
+                await adapterRegistry.sendResponse({
+                  inReplyTo: message.id,
+                  userId: message.userId,
+                  conversationId: message.conversationId,
+                  text: '⚠️ Session not found or not owned by you.',
+                  format: 'text',
+                  platform: message.platform,
+                });
+                return;
+              }
+            }
+
+            const bridgeResult = await manager.executeTool(
+              toolInput,
+              async (event: ToolOutcomeEvent) => {
+                const text = event.type === 'poll_err'
+                  ? toTelegramUserResponseFromPollError(event.error)
+                  : (event.output.exitCode === 0
+                    ? `✅ OpenCode completed.\n${event.output.stdout || 'No output.'}`
+                    : `⚠️ OpenCode failed (exit ${event.output.exitCode ?? 'unknown'}).\n${event.output.stderr || event.output.stdout || 'No output.'}`);
+                await adapterRegistry.sendResponse({ inReplyTo: message.id, userId: message.userId, conversationId: message.conversationId, text, format: 'text', platform: message.platform });
               },
             );
 
+            if (toolInput.action === 'start' && bridgeResult.success && bridgeResult.sessionId) {
+              terminalSessionOwners.set(bridgeResult.sessionId, message.userId);
+            }
+
+            // User-visible start behavior: send immediate ack with session creation,
+            // then follow with a single background outcome message from poll callback.
             const responseText = bridgeResult.success
-              ? `✅ OpenCode executed via terminal_session.\n${bridgeResult.summary ?? 'Completed.'}`
-              : `⚠️ ${bridgeResult.error ?? 'OpenCode execution failed.'}`;
+              ? (toolInput.action === 'start'
+                ? '✅ OpenCode started. I will post the result shortly.'
+                : toolInput.action === 'approve'
+                  ? '✅ Approval sent to terminal session.'
+                  : toolInput.action === 'deny'
+                    ? '✅ Denial sent to terminal session.'
+                    : toolInput.action === 'input'
+                      ? '✅ Input sent to terminal session.'
+                      : '✅ Request sent to terminal session.')
+              : '⚠️ OpenCode execution failed.';
 
             await adapterRegistry.sendResponse({
               inReplyTo: message.id,
@@ -690,10 +729,31 @@ async function bootstrap(): Promise<void> {
   // ── 9. Initialize adapters ────────────────────────────────────────────────
   await adapterRegistry.initializeAll();
 
+  // ── 9b. Healthcheck HTTP server (port 8080) ───────────────────────────────
+  const healthcheckServer = Bun.serve({
+    port: parseInt(process.env.HEALTHCHECK_PORT || '8080'),
+    fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === '/health' && req.method === 'GET') {
+        return new Response(JSON.stringify({ status: 'ok', timestamp: Date.now() }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response('Not Found', { status: 404 });
+    },
+  });
+
+  shutdown.register(async () => {
+    log.info('Stopping healthcheck server');
+    healthcheckServer.stop();
+  });
+
   log.info(
     {
       adapters: adapterRegistry.list(),
       mcpPort: config.mcp.serverPort,
+      healthcheckPort: parseInt(process.env.HEALTHCHECK_PORT || '8080'),
     },
     'Self-BOT ready',
   );

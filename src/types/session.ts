@@ -27,8 +27,13 @@ export const DEFAULT_MEMORY_POLICY: MemoryPolicy = {
   reservedResponseTokens: 1000,
 };
 
+/** Bump when persisted session shape or recovery rules need a clean reset. */
+export const CURRENT_SESSION_VERSION = 2;
+
 // ─── UserSession ──────────────────────────────────────────────────────────────
 export interface UserSession {
+  /** Persisted session schema version for safe resets across deployments */
+  version: number;
   /** Stable user identifier */
   userId: string;
   /** Current conversation history (never contains raw credentials) */

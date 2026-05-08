@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  scraper:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - LOG_LEVEL=info
+      - PORT=3000
+      - BROWSER_POOL_SIZE=3
+      - TIMEOUT_MS=30000
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

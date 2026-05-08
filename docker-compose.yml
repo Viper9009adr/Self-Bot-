@@ -1,0 +1,48 @@
+services:
+  redis:
+    image: redis:alpine
+    volumes:
+      - /mnt/docker-data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  browser-worker:
+    build:
+      context: .
+      dockerfile: browser-worker/Dockerfile
+    ports:
+      - "3002:3002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8080"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - BROWSER_WORKER_URL=http://browser-worker:3002
+      - WA_SESSION_PATH=/tmp/whatsapp-session
+    volumes:
+      - ./runtime-skills:/app/runtime-skills
+      - ./whatsapp-session:/tmp/whatsapp-session
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      browser-worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:$${HEALTHCHECK_PORT:-8080}/health || curl -f http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

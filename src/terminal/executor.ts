@@ -5,7 +5,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { childLogger } from '../utils/logger.js';
-import type { SkillDefinition, TerminalConfig, TerminalOutput, ShellQuotingRule } from './types.js';
+import type { SkillDefinition, TerminalConfig, TerminalOutput, ShellQuotingRule, SkillTransformation } from './types.js';
 import { buildCommandArgs } from './validator.js';
 
 const log = childLogger({ module: 'terminal:executor' });
@@ -70,6 +70,140 @@ export function applyShellQuotingRules(
 }
 
 /**
+ * Apply declarative transformations to command arguments.
+ * 
+ * Transforms arguments based on skill definition's subcommand, approveFlag,
+ * and transformations array. This replaces hardcoded command-specific logic
+ * with a declarative approach.
+ * 
+ * @param args - Array of command arguments to transform
+ * @param skill - SkillDefinition with transformation configuration
+ * @returns Transformed array of arguments
+ */
+function applyTransformations(args: string[], skill: SkillDefinition): string[] {
+  const result = [...args];
+
+  // 1. Inject subcommand at the beginning if specified and not present
+  if (skill.subcommand && !result.includes(skill.subcommand)) {
+    result.unshift(skill.subcommand);
+  }
+
+  // 2. Handle approve flag transformation
+  let approveValue: string | undefined;
+  if (skill.approveFlag) {
+    const approveIndex = result.findIndex(arg => arg === '--approve');
+    if (approveIndex !== -1) {
+      approveValue = result[approveIndex + 1];
+      // Remove both --approve and its value
+      result.splice(approveIndex, 2);
+    }
+  }
+
+  // 3. Apply transformation rules
+  if (skill.transformations) {
+    for (const transform of skill.transformations) {
+      applySingleTransformation(result, transform);
+    }
+  }
+
+  // 4. If skill defines approveFlag, always inject it (no --approve arg required)
+  if (skill.approveFlag && result.length > 1) {
+    // Insert after subcommand (position 1)
+    result.splice(1, 0, skill.approveFlag);
+  }
+
+  // 5. Reorder flags based on flagPosition
+  if (skill.flagPosition && skill.subcommand) {
+    const subIdx = result.indexOf(skill.subcommand);
+    if (subIdx === -1) return result;
+    
+    if (skill.flagPosition === 'before-subcommand') {
+      // Flags are AFTER subcommand, move them BEFORE
+      const afterSub = result.slice(subIdx + 1);
+      const flags = afterSub.filter(arg => arg.startsWith('-'));
+      const others = afterSub.filter(arg => !arg.startsWith('-'));
+      if (flags.length > 0) {
+        result.splice(subIdx + 1, afterSub.length, ...flags, ...others);
+      }
+    } else if (skill.flagPosition === 'after-subcommand') {
+      // Flags are BEFORE subcommand, move them AFTER
+      const beforeSub = result.slice(1, subIdx);
+      const flags = beforeSub.filter(arg => arg.startsWith('-'));
+      const others = beforeSub.filter(arg => !arg.startsWith('-'));
+      if (flags.length > 0) {
+        result.splice(1, subIdx - 1, ...others, ...flags);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Apply a single transformation rule to the argument array.
+ */
+function applySingleTransformation(args: string[], transform: SkillTransformation): void {
+  switch (transform.type) {
+    case 'prepend': {
+      // Prepend value to args if flag is found and matches value
+      const idx = args.indexOf(transform.flag);
+      if (idx !== -1) {
+        const matchValue = transform.value === undefined || args[idx + 1] === transform.value;
+        if (matchValue && transform.value) {
+          args.splice(idx + 1, 0, transform.value);
+        }
+      }
+      break;
+    }
+    case 'append': {
+      // Append value to args if flag is found
+      const idx = args.indexOf(transform.flag);
+      if (idx !== -1 && transform.value) {
+        args.splice(idx + 2, 0, transform.value);
+      }
+      break;
+    }
+    case 'remove-flag': {
+      // Remove flag and optionally its value
+      const idx = args.indexOf(transform.flag);
+      if (idx !== -1) {
+        // Check if next arg is a value (not a flag)
+        const nextArg = args[idx + 1];
+        const removeValue = transform.value === undefined || nextArg === transform.value;
+        if (removeValue && nextArg && !nextArg.startsWith('-')) {
+          args.splice(idx, 2);
+        } else {
+          args.splice(idx, 1);
+        }
+      }
+      break;
+    }
+    case 'convert-flag': {
+      // Convert one flag to another
+      const idx = args.indexOf(transform.flag);
+      if (idx !== -1 && transform.targetFlag) {
+        args[idx] = transform.targetFlag;
+      }
+      break;
+    }
+    case 'positional': {
+      // Convert flag to positional argument (move value to end)
+      const idx = args.indexOf(transform.flag);
+      if (idx !== -1) {
+        const value = args[idx + 1];
+        // Remove flag and its value
+        args.splice(idx, 2);
+        // Add value as positional at the end
+        if (value && !value.startsWith('-')) {
+          args.push(value);
+        }
+      }
+      break;
+    }
+  }
+}
+
+/**
  * Execute a skill command with proper argument handling.
  */
 export function executeSkill(
@@ -82,53 +216,11 @@ export function executeSkill(
 ): { process: ChildProcess; promise: Promise<TerminalOutput> } {
   // Build command and arguments
   const command = skill.command;
-  const args = buildCommandArgs(skill, userArgs);
-  
-  // Special handling for opencode command to ensure correct structure
-  if (command === 'opencode') {
-    // Ensure 'run' subcommand comes immediately after 'opencode'
-    if (!args.includes('run')) {
-      // Insert 'run' at the beginning of args if it's not already there
-      args.unshift('run');
-    }
-    
-    // Extract and remove --approve flag FIRST
-    const approveIndex = args.findIndex(arg => arg === '--approve');
-    let approveValue: string | undefined;
-    if (approveIndex !== -1) {
-      approveValue = args[approveIndex + 1];
-      // Remove both --approve and its value
-      args.splice(approveIndex, 2);
-    }
-    
-    // Remove any --prompt flag and extract the prompt value as positional argument
-    // opencode run expects: opencode run "prompt text"
-    const promptIndex = args.findIndex(arg => arg === '--prompt');
-    if (promptIndex !== -1) {
-      const promptValue = args[promptIndex + 1];
-      // Remove both --prompt and its value
-      args.splice(promptIndex, 2);
-      // Add prompt as positional argument at the end
-      if (promptValue) {
-        args.push(promptValue);
-      }
-    }
-    
-    // Remove any other unsupported flags like --provider or --model
-    // Keep only 'run' and the prompt
-    const finalArgs = args.filter(arg => 
-      arg === 'run' || 
-      (!arg.startsWith('--') && arg !== 'run')
-    );
-    args.length = 0;
-    args.push(...finalArgs);
-    
-    // If approveValue is 'true', insert --dangerously-skip-permissions after 'run' but before the prompt
-    if (approveValue === 'true' && args.length > 1) {
-      // args[0] is 'run', prompt is at args[1]
-      // Insert the flag after 'run'
-      args.splice(1, 0, '--dangerously-skip-permissions');
-    }
+  let args = buildCommandArgs(skill, userArgs);
+
+  // Apply declarative transformations if defined
+  if (skill.transformations || skill.subcommand || skill.approveFlag) {
+    args = applyTransformations(args, skill);
   }
 
    log.info({ command, args, cwd: normalizedCwd }, 'Executing terminal command');

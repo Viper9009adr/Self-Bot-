@@ -14,6 +14,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGroq } from '@ai-sdk/groq';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { LanguageModel } from 'ai';
 import type { Config } from '../config/index.js';
 import { ConfigError } from '../utils/errors.js';
@@ -145,6 +146,19 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
       return groq(model);
     }
 
+    case 'google': {
+      if (!config.llm.googleApiKey) {
+        throw new ConfigError(
+          'GOOGLE_API_KEY is required when LLM_PROVIDER=google',
+          'llm.googleApiKey',
+        );
+      }
+      const google = createGoogleGenerativeAI({
+        apiKey: config.llm.googleApiKey as unknown as string,
+      });
+      return google(model);
+    }
+
     // ── Free / OAuth Token Providers ────────────────────────────────────────
 
     case 'github-models': {
@@ -159,9 +173,8 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
         name: 'github-models',
         baseURL: GITHUB_MODELS_BASE_URL,
         apiKey: config.llm.githubToken as unknown as string,
-        compatibility: 'compatible',
       });
-      return ghModels(model);
+      return ghModels.chat(model);
     }
 
     case 'openrouter': {
@@ -179,13 +192,12 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
         name: 'openrouter',
         baseURL: OPENROUTER_BASE_URL,
         apiKey: config.llm.openrouterApiKey as unknown as string,
-        compatibility: 'compatible',
         headers: {
           'HTTP-Referer': referer ?? 'https://github.com/self-bot',
           'X-Title': 'Self-BOT',
         },
       });
-      return openrouter(model);
+      return openrouter.chat(model);
     }
 
     case 'claude-oauth': {
@@ -345,9 +357,8 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
         name: 'nvidia-nim',
         baseURL: NVIDIA_NIM_BASE_URL,
         apiKey: config.llm.nvidiaNimApiKey as unknown as string,
-        compatibility: 'compatible',
       });
-      return nim(model);
+      return nim.chat(model);
     }
 
     case 'local': {
@@ -361,9 +372,8 @@ export function createLLMModel(config: Config, oauthAccessToken?: string): Langu
         name: 'local',
         baseURL: config.llm.localBaseUrl,
         apiKey: (config.llm.localApiKey as unknown as string | undefined) ?? 'local-placeholder',
-        compatibility: 'compatible',
       });
-      return local(model);
+      return local.chat(model);
     }
 
     default: {

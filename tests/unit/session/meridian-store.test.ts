@@ -165,6 +165,7 @@ describe('MeridianSessionStore DSL parsing', () => {
 
   describe('_deserialize', () => {
     const validSession: UserSession = { 
+      version: 2,
       userId: 'test-user',
       history: [],
       maxHistoryTokens: 8000,
@@ -296,6 +297,7 @@ describe('MeridianSessionStore DSL parsing', () => {
   describe('Integration: get() with DSL parsing', () => {
     it('should retrieve session when MCP returns text field', async () => {
       const validSession: UserSession = { 
+        version: 2,
         userId: 'test-user',
         history: [],
         maxHistoryTokens: 8000,
@@ -332,6 +334,7 @@ describe('MeridianSessionStore DSL parsing', () => {
 
     it('should retrieve session when MCP returns content field (backward compatibility)', async () => {
       const validSession: UserSession = { 
+        version: 2,
         userId: 'test-user',
         history: [],
         maxHistoryTokens: 8000,
@@ -372,6 +375,7 @@ describe('MeridianSessionStore DSL parsing', () => {
 
     it('should handle array response from MCP', async () => {
       const validSession: UserSession = { 
+        version: 2,
         userId: 'test-user',
         history: [],
         maxHistoryTokens: 8000,

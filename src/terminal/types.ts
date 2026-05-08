@@ -16,6 +16,18 @@ export interface SkillArgument {
   default: string | undefined;
 }
 
+/** Transformation rule for skill arguments */
+export interface SkillTransformation {
+  /** Type of transformation to apply */
+  type: 'prepend' | 'append' | 'remove-flag' | 'convert-flag' | 'positional';
+  /** The flag to match for transformation */
+  flag: string;
+  /** Value to check/transform (optional) */
+  value?: string;
+  /** For convert-flag: target flag name */
+  targetFlag?: string;
+}
+
 /** Complete skill definition parsed from YAML frontmatter */
 export interface SkillDefinition {
   /** Unique skill name (matches filename without .md) */
@@ -36,6 +48,14 @@ export interface SkillDefinition {
   timeout: number;
   requiresShellMode?: boolean;
   shellQuoting?: ShellQuotingRules;
+  /** Subcommand to inject (e.g., "run") */
+  subcommand?: string;
+  /** Maps --approve to custom flag name (e.g., "--dangerously-skip-permissions") */
+  approveFlag?: string;
+  /** Declarative transformation rules for arguments */
+  transformations?: SkillTransformation[];
+  /** Flag ordering relative to subcommand: "before-subcommand" or "after-subcommand" */
+  flagPosition?: 'before-subcommand' | 'after-subcommand';
 }
 
 // ─── Session Management ────────────────────────────────────────────────────────

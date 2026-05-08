@@ -9,6 +9,7 @@ import { OpenAIMediaService } from './openai.js';
 import { LocalMediaService } from './local.js';
 import { NvidiaNIMMediaService } from './nvidia-nim.js';
 import { ComfyUIMediaService } from './comfyui.js';
+import { GoogleMediaService } from './google.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { childLogger } from '../utils/logger.js';
@@ -132,8 +133,13 @@ export function createMediaService(config: Config): IMediaService | null {
   const openaiService = config.llm.openaiApiKey
     ? new OpenAIMediaService(config.llm.openaiApiKey as unknown as string, mediaConfig)
     : null;
+
   const nimService = config.llm.nvidiaNimApiKey
     ? new NvidiaNIMMediaService(config.llm.nvidiaNimApiKey as unknown as string, mediaConfig, config.media?.nvidiaNimImageModel)
+    : null;
+
+  const googleService = config.llm.googleApiKey
+    ? new GoogleMediaService(config.llm.googleApiKey as unknown as string, mediaConfig)
     : null;
 
   // Build ComfyUI service if configured
@@ -148,10 +154,11 @@ export function createMediaService(config: Config): IMediaService | null {
     }
   }
 
-  // Ordered image services array: comfyui → nim → local → openai
+  // Ordered image services array: comfyui → nim → google → local → openai
   const imageServices: IMediaService[] = [];
   if (comfyuiService) imageServices.push(comfyuiService);
   if (nimService) imageServices.push(nimService);
+  if (googleService) imageServices.push(googleService);
   if (config.llm.localImageUrl) imageServices.push(localService);
   if (openaiService) imageServices.push(openaiService);
 

@@ -42,6 +42,29 @@ export function validateSkillDefinition(definition: SkillDefinition): Validation
     errors.push('Command must not contain shell operators');
   }
 
+  // Validate transformations if present
+  if (definition.transformations) {
+    const validTypes = ['prepend', 'append', 'remove-flag', 'convert-flag', 'positional'];
+    for (const transform of definition.transformations) {
+      if (!validTypes.includes(transform.type)) {
+        errors.push(`Invalid transformation type '${transform.type}'. Valid types: ${validTypes.join(', ')}`);
+      }
+      if (!transform.flag || transform.flag.trim() === '') {
+        errors.push('Transformation flag is required');
+      }
+      // convert-flag requires targetFlag
+      if (transform.type === 'convert-flag' && !transform.targetFlag) {
+        errors.push('convert-flag transformation requires targetFlag');
+      }
+    }
+  }
+
+  // Validate flagPosition if present
+  if (definition.flagPosition && 
+      !['before-subcommand', 'after-subcommand'].includes(definition.flagPosition)) {
+    errors.push('flagPosition must be "before-subcommand" or "after-subcommand"');
+  }
+
   return {
     valid: errors.length === 0,
     errors,

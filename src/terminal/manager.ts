@@ -20,12 +20,52 @@ import { validateSessionInput } from './validator.js';
 const log = childLogger({ module: 'terminal:manager' });
 
 /**
+ * Event emitted by background OpenCode polling.
+ *
+ * - `tool_outcome`: final process output is available (success or failure exit code)
+ * - `poll_err`: polling could not obtain a final outcome (e.g., timeout/session error)
+ */
+export type ToolOutcomeEvent =
+  | { type: 'tool_outcome'; sessionId: string; output: TerminalOutput }
+  | { type: 'poll_err'; sessionId: string; error: string };
+
+export type ExecuteToolInput = {
+  action: 'start' | 'approve' | 'deny' | 'input' | 'output' | 'terminate' | 'list';
+  skillName?: string;
+  args?: Record<string, string>;
+  cwd?: string;
+  sessionId?: string;
+  input?: string;
+  timeout?: number;
+  pollAttempts?: number;
+  pollIntervalMs?: number;
+};
+
+export type ExecuteToolOutput = {
+  action: string;
+  success: boolean;
+  sessionId?: string;
+  output?: TerminalOutput;
+  sessions?: Array<{ id: string; skillName: string; startedAt: number; ended: boolean }>;
+};
+
+/**
  * Terminal session manager.
  */
 export class TerminalSessionManager {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly config: TerminalConfig;
   private readonly skills: Map<string, LoadedSkill>;
+
+  /**
+   * Normalize OpenCode polling timeout to the contract minimum.
+   *
+   * Contract: keep the provided value only when it is finite and >= 60_000 ms;
+   * otherwise force 60_000 ms.
+   */
+  private normalizeOpencodeTimeout(timeout?: number): number {
+    return Number.isFinite(timeout) && (timeout as number) >= 60_000 ? (timeout as number) : 60_000;
+  }
 
   constructor(config: TerminalConfig, skills: Map<string, LoadedSkill>) {
     this.config = config;
@@ -239,6 +279,169 @@ export class TerminalSessionManager {
 
     // Return immediately with just the sessionId
     return { sessionId };
+  }
+
+  async executeTool(
+    input: ExecuteToolInput,
+    onToolResult?: (event: ToolOutcomeEvent) => Promise<void> | void,
+  ): Promise<ExecuteToolOutput> {
+    switch (input.action) {
+      case 'start': {
+        if (!input.skillName) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'skillName is required for start action',
+          };
+        }
+
+        if (input.skillName === 'opencode') {
+          const normalizedTimeout = this.normalizeOpencodeTimeout(input.timeout);
+          const started = await this.startSessionBackground(
+            input.skillName,
+            input.args,
+            input.cwd,
+            normalizedTimeout,
+          );
+
+          if (onToolResult) {
+            void this.pollForToolOutcome(
+              started.sessionId,
+              onToolResult,
+              input.pollAttempts,
+              input.pollIntervalMs,
+            );
+          }
+
+          return {
+            action: 'start',
+            success: true,
+            sessionId: started.sessionId,
+          };
+        }
+
+        const started = await this.startSession(
+          input.skillName,
+          input.args,
+          input.cwd,
+          input.timeout,
+        );
+
+        return {
+          action: 'start',
+          success: true,
+          sessionId: started.sessionId,
+          output: started.output,
+        };
+      }
+      case 'approve': {
+        if (!input.sessionId) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'sessionId is required for approve action',
+          };
+        }
+        this.input(input.sessionId, 'approve\n');
+        return { action: 'approve', success: true, sessionId: input.sessionId };
+      }
+      case 'deny': {
+        if (!input.sessionId) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'sessionId is required for deny action',
+          };
+        }
+        this.input(input.sessionId, 'deny\n');
+        return { action: 'deny', success: true, sessionId: input.sessionId };
+      }
+      case 'input': {
+        if (!input.sessionId || !input.input) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'sessionId and input are required for input action',
+          };
+        }
+        this.input(input.sessionId, input.input);
+        return { action: 'input', success: true, sessionId: input.sessionId };
+      }
+      case 'output': {
+        if (!input.sessionId) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'sessionId is required for output action',
+          };
+        }
+        const output = await this.output(input.sessionId);
+        return { action: 'output', success: true, sessionId: input.sessionId, output };
+      }
+      case 'terminate': {
+        if (!input.sessionId) {
+          throw {
+            code: TerminalErrorCode.INVALID_ARGS,
+            message: 'sessionId is required for terminate action',
+          };
+        }
+        this.terminate(input.sessionId);
+        return { action: 'terminate', success: true, sessionId: input.sessionId };
+      }
+      case 'list':
+        return {
+          action: 'list',
+          success: true,
+          sessions: this.listSessions(),
+        };
+      default:
+        throw {
+          code: TerminalErrorCode.INVALID_ARGS,
+          message: 'Unknown action',
+        };
+    }
+  }
+
+  private async pollForToolOutcome(
+    sessionId: string,
+    onToolResult: (event: ToolOutcomeEvent) => Promise<void> | void,
+    pollAttempts = 60,
+    pollIntervalMs = 1000,
+  ): Promise<void> {
+    // Safety: callback errors are logged and swallowed so a failing notifier
+    // cannot crash or reject the background polling flow.
+    const safeNotify = async (event: ToolOutcomeEvent): Promise<boolean> => {
+      try {
+        await onToolResult(event);
+        return true;
+      } catch (err) {
+        log.error({ err, sessionId, eventType: event.type }, 'Tool outcome callback failed');
+        return false;
+      }
+    };
+
+    // Poll until the session exits. Emit a single terminal event:
+    // - tool_outcome when exitCode is available
+    // - poll_err on output retrieval error or overall polling timeout
+    for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
+      try {
+        const output = await this.output(sessionId);
+        if (output.exitCode !== null) {
+          await safeNotify({ type: 'tool_outcome', sessionId, output });
+          return;
+        }
+      } catch (err) {
+        await safeNotify({
+          type: 'poll_err',
+          sessionId,
+          error: (err as Error).message,
+        });
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    await safeNotify({
+      type: 'poll_err',
+      sessionId,
+      error: `Timed out waiting for session output (${pollAttempts} polls)`,
+    });
   }
 
   /**

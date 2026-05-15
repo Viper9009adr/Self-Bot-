@@ -133,6 +133,15 @@ export class ProgressReporter {
       });
       return true;
     } catch (err) {
+      if (format === 'markdown' && err instanceof Error && err.message.includes('parse')) {
+        try {
+          await this.api.editMessageText(this.chatId, this.messageId, finalText);
+          return true;
+        } catch (retryErr) {
+          log.debug({ err: retryErr, chatId: this.chatId }, 'ProgressReporter: finalize plain-text retry skipped');
+          return false;
+        }
+      }
       log.debug({ err, chatId: this.chatId }, 'ProgressReporter: finalize edit skipped');
       return false;
     }

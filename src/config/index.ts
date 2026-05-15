@@ -87,6 +87,11 @@ function buildRawConfig(): Record<string, unknown> {
       timeoutMs: process.env['BROWSER_WORKER_TIMEOUT_MS'],
     },
 
+    hybridScraper: {
+      url: process.env['HYBRID_SCRAPER_URL'],
+      timeoutMs: process.env['HYBRID_SCRAPER_TIMEOUT_MS'],
+    },
+
     queue: {
       concurrency: process.env['QUEUE_CONCURRENCY'],
       perUserConcurrency: process.env['QUEUE_PER_USER_CONCURRENCY'],

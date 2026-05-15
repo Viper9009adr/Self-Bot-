@@ -26,6 +26,7 @@ const ScrapeRequestSchema = z.object({
   format: z.enum(['json', 'csv']).default('json'),
   autoEscalate: z.boolean().default(true),
   waitForJs: z.boolean().default(false),
+  includeHtml: z.boolean().default(false),
   timeout: z.number().int().min(1000).max(120000).optional(),
 });
 
@@ -85,7 +86,11 @@ const pool = new BrowserPool();
 /**
  * Fast Path: Cheerio + Fetch
  */
-async function scrapeStatic(url: string, selectors?: Record<string, string>) {
+async function scrapeStatic(
+  url: string,
+  selectors?: Record<string, string>,
+  includeHtml = false,
+) {
   log.debug({ url }, 'Attempting static scrape (Cheerio)');
   const response = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Hybrid-Scraper/1.0)' },
@@ -96,10 +101,12 @@ async function scrapeStatic(url: string, selectors?: Record<string, string>) {
   const $ = load(html);
   
   if (!selectors) {
-    return { 
+    return {
       _engine: 'cheerio',
+      ...(includeHtml ? { html } : {}),
+      finalUrl: response.url || url,
       title: $('title').text().trim(),
-      text: $('body').text().trim().slice(0, 5000) 
+      text: $('body').text().trim().slice(0, 5000),
     };
   }
 
@@ -113,7 +120,12 @@ async function scrapeStatic(url: string, selectors?: Record<string, string>) {
 /**
  * Heavy Path: Playwright
  */
-async function scrapeDynamic(url: string, selectors?: Record<string, string>, timeout = DEFAULT_TIMEOUT) {
+async function scrapeDynamic(
+  url: string,
+  selectors?: Record<string, string>,
+  timeout = DEFAULT_TIMEOUT,
+  includeHtml = false,
+) {
   log.debug({ url }, 'Attempting dynamic scrape (Playwright)');
   const context = await pool.acquireContext();
   const page = await context.newPage();
@@ -124,6 +136,8 @@ async function scrapeDynamic(url: string, selectors?: Record<string, string>, ti
     if (!selectors) {
       return {
         _engine: 'playwright',
+        ...(includeHtml ? { html: await page.content() } : {}),
+        finalUrl: page.url(),
         title: await page.title(),
         text: (await page.innerText('body')).trim().slice(0, 5000),
       };
@@ -158,26 +172,26 @@ app.post('/scrape', async (request, reply) => {
 
   try {
     if (body.waitForJs) {
-      data = await scrapeDynamic(body.url, body.selectors, body.timeout);
+      data = await scrapeDynamic(body.url, body.selectors, body.timeout, body.includeHtml);
     } else {
       try {
-        data = await scrapeStatic(body.url, body.selectors);
+        data = await scrapeStatic(body.url, body.selectors, body.includeHtml);
         
         // Escalation Logic: If any requested selector returned empty, and autoEscalate is on
         if (body.autoEscalate && body.selectors) {
           const isEmpty = Object.values(data).some(v => v === '');
           if (isEmpty) {
             reqLog.info('Some fields empty, escalating to Playwright');
-            data = await scrapeDynamic(body.url, body.selectors, body.timeout);
+            data = await scrapeDynamic(body.url, body.selectors, body.timeout, body.includeHtml);
           }
         } else if (body.autoEscalate && !data.text) {
           reqLog.info('Content empty, escalating to Playwright');
-          data = await scrapeDynamic(body.url, body.selectors, body.timeout);
+          data = await scrapeDynamic(body.url, body.selectors, body.timeout, body.includeHtml);
         }
       } catch (e) {
         if (body.autoEscalate) {
           reqLog.warn({ err: (e as Error).message }, 'Static scrape failed, escalating');
-          data = await scrapeDynamic(body.url, body.selectors, body.timeout);
+          data = await scrapeDynamic(body.url, body.selectors, body.timeout, body.includeHtml);
         } else {
           throw e;
         }

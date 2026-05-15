@@ -6,6 +6,7 @@
 # Image names:
 #   ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/self-bot:${TAG}
 #   ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/browser-worker:${TAG}
+#   ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/hybrid-scraper:${TAG}
 
 services:
   redis:
@@ -20,21 +21,34 @@ services:
 
   browser-worker:
     image: ${REGION:-us-central1}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/browser-worker:${TAG:-latest}
-    ports:
-      - "3002:3002"
+    labels:
+      - "traefik.enable=false"
+    environment:
+      - BROWSER_WORKER_HOST=0.0.0.0
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
       interval: 10s
       timeout: 5s
       retries: 3
 
+  hybrid-scraper:
+    image: ${REGION:-us-central1}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/hybrid-scraper:${TAG:-latest}
+    labels:
+      - "traefik.enable=false"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   bot:
     image: ${REGION:-us-central1}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/self-bot:${TAG:-latest}
-    ports:
-      - "8081:8080"
     environment:
+      - NODE_ENV=production
       - REDIS_URL=redis://redis:6379
       - BROWSER_WORKER_URL=http://browser-worker:3002
+      - HYBRID_SCRAPER_URL=http://hybrid-scraper:3000
+      - HEALTHCHECK_PORT=8090
       - RUNTIME_SKILLS_PATH=/app/runtime-skills
     volumes:
       - /mnt/docker-data/runtime-skills:/app/runtime-skills
@@ -46,8 +60,25 @@ services:
         condition: service_healthy
       browser-worker:
         condition: service_healthy
+      hybrid-scraper:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "sh", "-c", "curl -f http://localhost:$${HEALTHCHECK_PORT:-8090}/health || curl -f http://localhost:8090/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - default
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bot.rule=Host(`bot.adanthos.com`)"
+      - "traefik.http.routers.bot.entrypoints=websecure"
+      - "traefik.http.routers.bot.tls=true"
+      - "traefik.http.routers.bot.tls.certresolver=letsencrypt"
+      - "traefik.http.services.bot.loadbalancer.server.port=8090"
+
+networks:
+  default: {}
+  traefik-public:
+    external: true

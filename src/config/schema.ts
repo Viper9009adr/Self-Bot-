@@ -134,6 +134,11 @@ export const ConfigSchema = z.object({
     timeoutMs: z.coerce.number().int().min(1000).default(30000),
   }),
 
+  hybridScraper: z.object({
+    url: z.string().url().default('http://localhost:3000'),
+    timeoutMs: z.coerce.number().int().min(1000).default(30000),
+  }),
+
   // ── Queue ─────────────────────────────────────────────────────────────────
   queue: z.object({
     concurrency: z.coerce.number().int().min(1).default(4),

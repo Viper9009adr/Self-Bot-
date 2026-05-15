@@ -1,13 +1,13 @@
 /**
  * src/mcp/tools/scrape-website.ts
- * scrape_website tool: fetch a URL and extract structured content via Cheerio.
+ * scrape_website tool: delegate scraping to the hybrid-scraper service.
  */
 import { z } from 'zod';
 import { BaseTool } from './base.js';
 import type { ToolResult, ToolContext } from '../../types/tool.js';
 import { ToolErrorCode } from '../../types/tool.js';
+import { getConfig } from '../../config/index.js';
 import { parseStructured, parseToText, truncateText } from '../../utils/html-parser.js';
-import { withRetry } from '../../utils/retry.js';
 
 const ScrapeWebsiteInput = z.object({
   url: z.string().url().describe('The URL to scrape'),
@@ -25,7 +25,7 @@ const ScrapeWebsiteInput = z.object({
   waitForJs: z
     .boolean()
     .default(false)
-    .describe('Whether to render JavaScript (requires browser-worker)'),
+    .describe('Whether to render JavaScript via the hybrid scraper. Prefer true for job boards, search results, listings, filters, and SPA-like pages.'),
   selector: z
     .string()
     .optional()
@@ -41,62 +41,104 @@ const ScrapeWebsiteInput = z.object({
 
 type ScrapeWebsiteInput = z.infer<typeof ScrapeWebsiteInput>;
 
+type HybridScraperResult = {
+  success: boolean;
+  requestId?: string;
+  data?: {
+    _engine?: string;
+    html?: string;
+    title?: string;
+    text?: string;
+    finalUrl?: string;
+  } | null;
+  error?: string;
+};
+
 export class ScrapeWebsiteTool extends BaseTool<ScrapeWebsiteInput> {
   readonly name = 'scrape_website';
   readonly description =
     'Fetch a webpage and extract its text content, structured data, or links. ' +
-    'Use extractMode="structured" for rich data (headings, paragraphs, links). ' +
-    'Use extractMode="text" for plain text. ' +
-    'Use extractMode="links" to list all hyperlinks.';
+    'Uses the hybrid scraper service to auto-escalate from static fetch to browser rendering when needed.';
   readonly inputSchema = ScrapeWebsiteInput;
 
+  private async fetchHybridScrape(
+    input: ScrapeWebsiteInput,
+    signal?: AbortSignal,
+  ): Promise<{ html: string; title?: string; finalUrl: string }> {
+    const config = getConfig();
+    const response = await fetch(`${config.hybridScraper.url}/scrape`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: input.url,
+        format: 'json',
+        autoEscalate: true,
+        waitForJs: input.waitForJs,
+        includeHtml: true,
+        timeout: input.timeoutMs,
+      }),
+      signal: signal ?? null,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Hybrid scraper returned HTTP ${response.status}: ${errText}`);
+    }
+
+    const result = (await response.json()) as HybridScraperResult;
+    if (!result.success) {
+      throw new Error(result.error ?? 'Hybrid scraper request failed');
+    }
+
+    if (!result.data?.html) {
+      throw new Error('Hybrid scraper did not return HTML content');
+    }
+
+    return {
+      html: result.data.html,
+      ...(result.data.title !== undefined ? { title: result.data.title } : {}),
+      finalUrl: result.data.finalUrl ?? input.url,
+    };
+  }
+
   protected async run(input: ScrapeWebsiteInput, context: ToolContext): Promise<ToolResult> {
-    const { url, extractMode, maxChars, timeoutMs } = input;
+    const { extractMode, maxChars } = input;
 
     let html: string;
+    let finalUrl = input.url;
+    let renderedTitle: string | undefined;
+
     try {
-      html = await withRetry(
-        async () => {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeoutMs);
-          try {
-            const response = await fetch(url, {
-              signal: controller.signal,
-              headers: {
-                'User-Agent':
-                  'Mozilla/5.0 (compatible; Self-BOT/1.0; +https://github.com/self-bot)',
-                'Accept': 'text/html,application/xhtml+xml,*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-              },
-            });
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-            }
-            return response.text();
-          } finally {
-            clearTimeout(timer);
-          }
-        },
-        { maxAttempts: 2, initialDelayMs: 1000 },
-      );
+      const scraped = await this.fetchHybridScrape(input, context.signal);
+      html = scraped.html;
+      finalUrl = scraped.finalUrl;
+      renderedTitle = scraped.title;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       if (err instanceof Error && err.name === 'AbortError') {
         return {
           success: false,
           data: null,
-          error: `Request timed out after ${timeoutMs}ms`,
+          error: `Request timed out after ${input.timeoutMs}ms`,
           errorCode: ToolErrorCode.TIMEOUT,
         };
       }
+
+      const lowered = message.toLowerCase();
+      let errorCode = ToolErrorCode.NETWORK_ERROR;
+      if (lowered.includes('captcha')) errorCode = ToolErrorCode.CAPTCHA;
+      else if (lowered.includes('403') || lowered.includes('forbidden') || lowered.includes('auth')) errorCode = ToolErrorCode.AUTH_FAILURE;
+      else if (lowered.includes('429') || lowered.includes('rate')) errorCode = ToolErrorCode.RATE_LIMITED;
+      else if (lowered.includes('unable to connect') || lowered.includes('econnrefused') || lowered.includes('hybrid scraper returned http 5')) errorCode = ToolErrorCode.WORKER_UNAVAILABLE;
+
       return {
         success: false,
         data: null,
-        error: `Failed to fetch ${url}: ${err instanceof Error ? err.message : String(err)}`,
-        errorCode: ToolErrorCode.NETWORK_ERROR,
+        error: `Failed to fetch ${input.url}: ${message}`,
+        errorCode,
       };
     }
 
-    // Apply CSS selector scope if provided
     if (input.selector) {
       const { load } = await import('cheerio');
       const $ = load(html);
@@ -108,33 +150,29 @@ export class ScrapeWebsiteTool extends BaseTool<ScrapeWebsiteInput> {
       const text = truncateText(parseToText(html), maxChars);
       return {
         success: true,
-        data: { url, text, extractMode: 'text' },
-        summary: `Extracted ${text.length} characters of text from ${url}`,
+        data: { url: finalUrl, text, extractMode: 'text' },
+        summary: `Extracted ${text.length} characters of text from ${finalUrl}`,
       };
     }
 
     if (extractMode === 'links') {
-      const structured = parseStructured(html, url);
-      const links = structured.links.slice(0, 100); // cap at 100 links
+      const structured = parseStructured(html, finalUrl);
+      const links = structured.links.slice(0, 100);
       return {
         success: true,
-        data: { url, links, linkCount: links.length, extractMode: 'links' },
-        summary: `Found ${links.length} links on ${url}`,
+        data: { url: finalUrl, links, linkCount: links.length, extractMode: 'links' },
+        summary: `Found ${links.length} links on ${finalUrl}`,
       };
     }
 
-    // structured mode
-    const structured = parseStructured(html, url);
-    const textSummary = truncateText(
-      structured.paragraphs.join('\n\n'),
-      maxChars,
-    );
+    const structured = parseStructured(html, finalUrl);
+    const textSummary = truncateText(structured.paragraphs.join('\n\n'), maxChars);
 
     return {
       success: true,
       data: {
-        url,
-        title: structured.title,
+        url: finalUrl,
+        title: renderedTitle ?? structured.title,
         description: structured.description,
         headings: structured.headings.slice(0, 20),
         text: textSummary,
@@ -142,7 +180,7 @@ export class ScrapeWebsiteTool extends BaseTool<ScrapeWebsiteInput> {
         images: structured.images.slice(0, 20),
         extractMode: 'structured',
       },
-      summary: `Scraped ${url}: "${structured.title ?? 'No title'}" with ${structured.paragraphs.length} paragraphs`,
+      summary: `Scraped ${finalUrl}: "${renderedTitle ?? structured.title ?? 'No title'}" with ${structured.paragraphs.length} paragraphs`,
     };
   }
 }

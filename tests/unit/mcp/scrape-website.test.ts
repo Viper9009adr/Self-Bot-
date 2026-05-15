@@ -6,8 +6,8 @@ import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:te
 import { ScrapeWebsiteTool } from '../../../src/mcp/tools/scrape-website.js';
 import type { ToolContext } from '../../../src/types/tool.js';
 import { ToolErrorCode } from '../../../src/types/tool.js';
+import * as configModule from '../../../src/config/index.js';
 
-// ─── Fixtures ─────────────────────────────────────────────────────────────────
 const SIMPLE_HTML = `
 <!DOCTYPE html>
 <html>
@@ -22,197 +22,214 @@ const SIMPLE_HTML = `
   <p>Second paragraph.</p>
   <a href="https://example.com/link1">Link One</a>
   <a href="/relative-link">Relative Link</a>
-  <ul>
-    <li>Item 1</li>
-    <li>Item 2</li>
-  </ul>
 </body>
 </html>
 `;
 
-const CAPTCHA_HTML = `
+const RENDERED_HTML = `
+<!DOCTYPE html>
 <html>
+<head>
+  <title>Rendered Page</title>
+</head>
 <body>
-  <div class="g-recaptcha" data-sitekey="abc123"></div>
-  <h1>Please verify you are not a robot</h1>
+  <h1>Rendered Heading</h1>
+  <p>Content from hybrid scraper.</p>
 </body>
 </html>
 `;
 
-// ─── Mock fetch ───────────────────────────────────────────────────────────────
-const mockFetch = mock(async (url: string): Promise<Response> => {
-  if (url.includes('captcha-site.com')) {
-    return new Response(CAPTCHA_HTML, { status: 200, headers: { 'Content-Type': 'text/html' } });
-  }
-  if (url.includes('timeout-site.com')) {
-    await new Promise((_, reject) =>
-      setTimeout(() => reject(Object.assign(new Error('AbortError'), { name: 'AbortError' })), 100),
-    );
-    throw new Error('Should not reach here');
-  }
-  if (url.includes('error-site.com')) {
-    return new Response('Not Found', { status: 404 });
-  }
-  return new Response(SIMPLE_HTML, { status: 200, headers: { 'Content-Type': 'text/html' } });
-});
-
-// ─── Test context ─────────────────────────────────────────────────────────────
 const testContext: ToolContext = {
   userId: 'test-user',
   taskId: 'test-task',
   conversationId: 'test-conv',
 };
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+const mockFetch = mock(async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  const url = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+
+  if (url.includes('hybrid-scraper.test/scrape')) {
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    const targetUrl = String(body['url'] ?? '');
+
+    if (targetUrl.includes('error-site.com')) {
+      return new Response('Not Found', { status: 404, statusText: 'Not Found' });
+    }
+
+    if (targetUrl.includes('captcha-site.com')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'CAPTCHA detected. Human intervention required.',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (targetUrl.includes('auth-site.com')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'HTTP 403 Forbidden',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        _engine: body['waitForJs'] ? 'playwright' : 'cheerio',
+        html: body['waitForJs'] ? RENDERED_HTML : SIMPLE_HTML,
+        title: body['waitForJs'] ? 'Rendered Page' : 'Test Page',
+        finalUrl: body['waitForJs'] ? 'https://rendered.example.com/final' : targetUrl,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  throw new Error(`Unexpected URL in test fetch: ${url}`);
+});
+
 describe('ScrapeWebsiteTool', () => {
   let tool: ScrapeWebsiteTool;
   let originalFetch: typeof globalThis.fetch;
+  let getConfigSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     tool = new ScrapeWebsiteTool();
     originalFetch = globalThis.fetch;
     // @ts-expect-error - mock fetch
     globalThis.fetch = mockFetch;
+    getConfigSpy = spyOn(configModule, 'getConfig').mockReturnValue({
+      browserWorker: {
+        url: 'http://browser-worker.test',
+        timeoutMs: 30000,
+      },
+      hybridScraper: {
+        url: 'http://hybrid-scraper.test',
+        timeoutMs: 30000,
+      },
+    } as ReturnType<typeof configModule.getConfig>);
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
     mockFetch.mockClear();
+    getConfigSpy.mockRestore();
   });
 
-  describe('tool metadata', () => {
-    it('has correct name', () => {
-      expect(tool.name).toBe('scrape_website');
-    });
-
-    it('has description', () => {
-      expect(tool.description).toContain('webpage');
-    });
-
-    it('has inputSchema', () => {
-      expect(tool.inputSchema).toBeDefined();
-    });
+  it('has correct metadata', () => {
+    expect(tool.name).toBe('scrape_website');
+    expect(tool.description).toContain('hybrid scraper');
+    expect(tool.inputSchema).toBeDefined();
   });
 
-  describe('structured extraction', () => {
-    it('extracts title and paragraphs', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'structured', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
+  it('extracts structured content from hybrid scraper HTML', async () => {
+    const result = await tool.execute(
+      { url: 'https://test.example.com', extractMode: 'structured', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
 
-      expect(result.success).toBe(true);
-      expect(result.data).toBeDefined();
-      const data = result.data as Record<string, unknown>;
-      expect(data['title']).toBe('Test Page');
-      expect(data['extractMode']).toBe('structured');
-      expect(data['url']).toBe('https://test.example.com');
-    });
-
-    it('extracts headings', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'structured', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
-
-      const data = result.data as Record<string, unknown>;
-      const headings = data['headings'] as Array<{ level: number; text: string }>;
-      expect(headings.length).toBeGreaterThanOrEqual(2);
-      expect(headings.some((h) => h.text === 'Main Heading')).toBe(true);
-    });
-
-    it('extracts links', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'structured', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
-
-      const data = result.data as Record<string, unknown>;
-      const links = data['links'] as Array<{ href: string }>;
-      expect(links.length).toBeGreaterThanOrEqual(1);
-      expect(links.some((l) => l.href.includes('example.com'))).toBe(true);
-    });
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data['title']).toBe('Test Page');
+    expect(data['extractMode']).toBe('structured');
+    expect(data['url']).toBe('https://test.example.com');
+    const headings = data['headings'] as Array<{ text: string }>;
+    expect(headings.some((h) => h.text === 'Main Heading')).toBe(true);
   });
 
-  describe('text extraction', () => {
-    it('returns plain text', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'text', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
+  it('returns rendered content when waitForJs is true', async () => {
+    const result = await tool.execute(
+      { url: 'https://dynamic.example.com', extractMode: 'structured', maxChars: 10000, waitForJs: true, timeoutMs: 5000 },
+      testContext,
+    );
 
-      expect(result.success).toBe(true);
-      const data = result.data as Record<string, unknown>;
-      expect(typeof data['text']).toBe('string');
-      expect(data['text'] as string).toContain('First paragraph');
-    });
-
-    it('respects maxChars limit', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'text', maxChars: 200, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
-
-      expect(result.success).toBe(true);
-      const data = result.data as Record<string, unknown>;
-      expect((data['text'] as string).length).toBeLessThanOrEqual(200); // includes ellipsis
-    });
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data['title']).toBe('Rendered Page');
+    expect(data['url']).toBe('https://rendered.example.com/final');
+    expect(data['text']).toContain('Content from hybrid scraper');
+    expect(mockFetch).toHaveBeenCalledWith(
+      'http://hybrid-scraper.test/scrape',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    );
   });
 
-  describe('links extraction', () => {
-    it('returns links list', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'links', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
+  it('returns plain text', async () => {
+    const result = await tool.execute(
+      { url: 'https://test.example.com', extractMode: 'text', maxChars: 200, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
 
-      expect(result.success).toBe(true);
-      const data = result.data as Record<string, unknown>;
-      expect(data['extractMode']).toBe('links');
-      expect(typeof data['linkCount']).toBe('number');
-    });
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data['text']).toContain('First paragraph');
+    expect((data['text'] as string).length).toBeLessThanOrEqual(200);
   });
 
-  describe('error handling', () => {
-    it('returns NETWORK_ERROR on HTTP 404', async () => {
-      const result = await tool.execute(
-        { url: 'https://error-site.com/page', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
+  it('returns links list', async () => {
+    const result = await tool.execute(
+      { url: 'https://test.example.com', extractMode: 'links', maxChars: 10000, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
 
-      expect(result.success).toBe(false);
-      expect(result.errorCode).toBe(ToolErrorCode.NETWORK_ERROR);
-    });
-
-    it('validates URL input', async () => {
-      const result = await tool.execute(
-        { url: 'not-a-url', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
-
-      expect(result.success).toBe(false);
-      expect(result.errorCode).toBe(ToolErrorCode.INVALID_INPUT);
-    });
-
-    it('includes durationMs in result', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
-
-      expect(result.durationMs).toBeDefined();
-      expect(result.durationMs).toBeGreaterThanOrEqual(0);
-    });
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data['extractMode']).toBe('links');
+    expect(typeof data['linkCount']).toBe('number');
   });
 
-  describe('summary', () => {
-    it('includes URL in summary', async () => {
-      const result = await tool.execute(
-        { url: 'https://test.example.com', extractMode: 'structured', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
-        testContext,
-      );
+  it('maps hybrid scraper HTTP failures to NETWORK_ERROR', async () => {
+    const result = await tool.execute(
+      { url: 'https://error-site.com/page', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
 
-      expect(result.summary).toContain('test.example.com');
-    });
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe(ToolErrorCode.NETWORK_ERROR);
+  });
+
+  it('maps captcha failures', async () => {
+    const result = await tool.execute(
+      { url: 'https://captcha-site.com/page', extractMode: 'text', maxChars: 5000, waitForJs: true, timeoutMs: 5000 },
+      testContext,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe(ToolErrorCode.CAPTCHA);
+  });
+
+  it('maps auth failures', async () => {
+    const result = await tool.execute(
+      { url: 'https://auth-site.com/page', extractMode: 'structured', maxChars: 5000, waitForJs: true, timeoutMs: 5000 },
+      testContext,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe(ToolErrorCode.AUTH_FAILURE);
+  });
+
+  it('validates URL input', async () => {
+    const result = await tool.execute(
+      { url: 'not-a-url', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe(ToolErrorCode.INVALID_INPUT);
+  });
+
+  it('includes durationMs in result', async () => {
+    const result = await tool.execute(
+      { url: 'https://test.example.com', extractMode: 'text', maxChars: 5000, waitForJs: false, timeoutMs: 5000 },
+      testContext,
+    );
+
+    expect(result.durationMs).toBeDefined();
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 });

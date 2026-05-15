@@ -1,5 +1,5 @@
-# Use the official Playwright image which has all browser dependencies
-FROM mcr.microsoft.com/playwright:v1.50.0-jammy
+# Use a Playwright image that matches the scraper's installed Playwright version.
+FROM mcr.microsoft.com/playwright:v1.59.1-jammy
 
 # Install Bun
 RUN apt-get update && apt-get install -y curl unzip && \

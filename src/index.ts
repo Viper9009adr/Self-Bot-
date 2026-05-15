@@ -452,13 +452,17 @@ async function bootstrap(): Promise<void> {
         }
       }
 
-      // Fetch Telegram image attachments (populate .data field for vision)
+      // Fetch Telegram file attachments (populate .data field for downstream tools)
       if (message.platform.platform === 'telegram') {
         const tgToken = config.telegram.botToken as unknown as string;
         const tgApi = telegramAdapter.getApi();
         if (tgApi) {
-          for (const att of message.attachments) {
-            if (att.type === 'image' && 'fileId' in att && att.fileId && !('data' in att && att.data)) {
+          for (const att of currentMessage.attachments) {
+            const isFetchableTelegramFile = (att.type === 'image' || att.type === 'document')
+              && 'fileId' in att
+              && !!att.fileId
+              && !('data' in att && att.data);
+            if (isFetchableTelegramFile) {
               try {
                 const fetched = await fetchTelegramFile(tgApi, tgToken, att.fileId);
                 (att as FileAttachment).data = fetched.data.toString('base64');
@@ -466,7 +470,7 @@ async function bootstrap(): Promise<void> {
                   (att as FileAttachment).mimeType = fetched.mimeType;
                 }
               } catch (err) {
-                childLog.warn({ err, fileId: att.fileId }, 'Failed to fetch Telegram image attachment');
+                childLog.warn({ err, fileId: att.fileId, attachmentType: att.type }, 'Failed to fetch Telegram attachment');
               }
             }
           }

@@ -171,6 +171,8 @@ export class AgentCore {
       'Never reveal chain-of-thought. Never store or echo secrets.',
       'For uploaded documents, keep the main chat as orchestration only; document text must stay in document-specific paths or RAG.',
       'When the user requests an image, call generate_image with a detailed, visually rich prompt enhancing their description with style, lighting, mood, composition, and technical quality. Enhance freely — if the user wanted verbatim they used --literal (handled separately).',
+      'For website research tasks, explore the site from real pages and discovered links; do not invent search URLs first, and use scrape_website with waitForJs=true for listings, search pages, and JS-heavy sites.',
+      'Never invent scraped results. Do not provide placeholder links, fake company names, or guessed job details; if the tool output does not verify them, say so plainly.',
       toolInstruction,
     ].join(' ');
   }
@@ -253,6 +255,11 @@ export class AgentCore {
     const hasImageAttachment = message.attachments.some((attachment) => attachment.type === 'image');
     const hasAudioAttachment = message.attachments.some((attachment) => attachment.type === 'audio');
     const hasUrl = /https?:\/\/\S+/i.test(text);
+    const mentionsKnownWebsite = /\b(indeed|linkedin|getonboard|get on board|getonbrd|facebook|instagram|x|twitter|reddit|github|stackoverflow|youtube|tiktok)\b/.test(normalized);
+    const hasInformationRetrievalIntent = /\b(find|get|search|look up|lookup|browse|read|summarize|scrape|fetch|open|show me|give me)\b/.test(normalized);
+    const hasWebResearchTarget = /\b(job|jobs|job offer|job offers|vacancy|vacancies|listing|listings|ad|ads|post|posts|profile|profiles|company|companies|role|roles|candidate|candidates)\b/.test(normalized);
+    const mentionsWebResource = /\b(url|link|website|web page|page|site)\b/.test(normalized);
+    const hasShortSiteContinuation = /^(ok|okay|yes|yeah|yep|sure|alright|continue|go on)\b[\s\S]{0,30}\b(on|from|at)\b[\s\S]{0,30}\b(indeed|linkedin|getonboard|get on board|getonbrd|facebook|instagram|x|twitter|reddit|github|stackoverflow|youtube|tiktok)\b/.test(normalized);
 
     if (hasPdfAttachment) enabled.add('read_pdf');
     if (hasImageAttachment && /\b(edit|change|modify|variation|remove|add)\b/.test(normalized)) enabled.add('edit_image');
@@ -263,6 +270,10 @@ export class AgentCore {
       /\b(scrape|fetch|browse|open|read|summarize)\b[\s\S]{0,40}\b(url|link|website|web page|page|site)\b/.test(normalized)
       || /\b(scrape_website|scrape website)\b/.test(normalized)
       || (hasUrl && !enabled.has('generate_image') && /\b(read|summarize|scrape|fetch|browse|open)\b/.test(normalized))
+      || (hasInformationRetrievalIntent && mentionsWebResource)
+      || (mentionsKnownWebsite && hasInformationRetrievalIntent)
+      || (mentionsKnownWebsite && hasWebResearchTarget)
+      || hasShortSiteContinuation
     ) enabled.add('scrape_website');
     if (/\b(fill|submit).*\bform\b/.test(normalized)) enabled.add('fill_form');
     if (/\b(log in|login|sign in)\b/.test(normalized)) enabled.add('login_account');
@@ -648,7 +659,8 @@ export class AgentCore {
       );
 
       let streamBuffer = '';
-      let lastStepTextNoToolCalls = '';
+        let lastStepTextNoToolCalls = '';
+        let lastToolResultFallbackText = '';
       let toolCallCount = 0;
 
       // Resolve model (per-request for claude-oauth to handle token refresh)
@@ -736,6 +748,10 @@ export class AgentCore {
                   },
                   `📋 Tool result: ${tr.toolName} → ${success === false ? '❌ FAILED' : '✅ OK'}`,
                 );
+                const fallbackText = this.extractToolResultFallbackText(tr.toolName, resultValue);
+                if (fallbackText) {
+                  lastToolResultFallbackText = fallbackText;
+                }
               }
             }
 
@@ -778,7 +794,11 @@ export class AgentCore {
         }
 
         const resultText = await result.text;
-        const toolFallback = this.selectFinalTextCandidate(lastStepTextNoToolCalls, streamBuffer);
+        const toolFallback = this.selectFinalTextCandidate(
+          lastStepTextNoToolCalls,
+          lastToolResultFallbackText,
+          streamBuffer,
+        );
         const selectedCandidate = this.resolveFinalText(resultText, toolFallback);
         let selectedFinal = this.filterFinalTextCandidate(selectedCandidate);
         if (!selectedFinal.trim()) {
@@ -977,6 +997,47 @@ export class AgentCore {
     return typeof resultText === 'string' && resultText.trim().length > 0
       ? resultText
       : toolFallback;
+  }
+
+  private extractToolResultFallbackText(toolName: string, resultValue: unknown): string {
+    if (!resultValue || typeof resultValue !== 'object') {
+      return '';
+    }
+
+    const result = resultValue as {
+      success?: boolean;
+      summary?: unknown;
+      error?: unknown;
+      data?: Record<string, unknown> | null;
+    };
+
+    if (result.success === false) {
+      return typeof result.error === 'string' ? result.error.trim() : '';
+    }
+
+    if (typeof result.summary === 'string' && result.summary.trim()) {
+      return result.summary.trim();
+    }
+
+    if (!result.data || typeof result.data !== 'object') {
+      return '';
+    }
+
+    if (toolName === 'scrape_website') {
+      const title = typeof result.data['title'] === 'string' ? result.data['title'] : '';
+      const url = typeof result.data['url'] === 'string' ? result.data['url'] : '';
+      const text = typeof result.data['text'] === 'string' ? result.data['text'] : '';
+      const snippets = text
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 3)
+        .join('\n');
+
+      return [title, url, snippets].filter((part) => part.length > 0).join('\n');
+    }
+
+    return '';
   }
 
   /**

@@ -6,6 +6,7 @@ RUN bun install --frozen-lockfile
 
 # Install Chrome for Puppeteer (WhatsApp adapter)
 RUN apt-get update && apt-get install -y \
+    curl \
     chromium \
     chromium-sandbox \
     && rm -rf /var/lib/apt/lists/* \

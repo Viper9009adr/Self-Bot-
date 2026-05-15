@@ -37,7 +37,7 @@ const USER_AGENT =
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 const BrowserCommandSchema = z.object({
-  action: z.enum(['fill_form', 'login', 'register', 'navigate', 'screenshot', 'extract_text']),
+  action: z.enum(['fill_form', 'login', 'register', 'navigate', 'screenshot', 'extract_text', 'extract_html']),
   url: z.string().url(),
   payload: z.record(z.string()).optional(),
   options: z
@@ -214,6 +214,18 @@ async function executeCommand(cmd: BrowserCommand): Promise<BrowserResult> {
       case 'extract_text': {
         const text = await page.innerText('body');
         return { success: true, data: { text: text.slice(0, 50000) } };
+      }
+
+      case 'extract_html': {
+        const html = await page.content();
+        return {
+          success: true,
+          data: {
+            html,
+            title: await page.title(),
+            finalUrl: page.url(),
+          },
+        };
       }
 
       case 'navigate': {

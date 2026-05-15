@@ -85,19 +85,21 @@ export async function sendTelegramResponse(
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       if (!chunk) continue;
+      const messageOptions = {
+        ...(i === 0 && meta.messageId
+          ? { reply_parameters: { message_id: meta.messageId } }
+          : {}),
+      };
       try {
         await bot.api.sendMessage(chatId, chunk, {
-          // Only reply to original message for first chunk
-          ...(i === 0 && meta.messageId
-            ? { reply_parameters: { message_id: meta.messageId } }
-            : {}),
+          ...messageOptions,
           ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
         });
       } catch (err) {
         // Fallback: retry without parse_mode if Markdown/HTML parsing fails
         if (parseMode && err instanceof Error && err.message.includes('parse')) {
           log.warn({ chatId, err: err.message }, 'Retrying without parse_mode');
-          await bot.api.sendMessage(chatId, chunk);
+          await bot.api.sendMessage(chatId, chunk, messageOptions);
         } else {
           log.error({ chatId, err }, 'Failed to send Telegram message');
           throw err;
